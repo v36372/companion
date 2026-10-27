@@ -35,8 +35,10 @@ Uncached component compilation is expensive; see the PR4 evidence for timings.
 
 The local mock test goes through the actual Wasm Harness, catalog-selected
 OpenRouter provider, fetch, host SecretStore overwrite and streaming response.
-Only `cfg(test)` may reroute the catalog's OpenRouter HTTPS URL to an explicitly
-selected 127.0.0.1 port. The mock verifies the injected test key, not the dummy.
+Only `cfg(test)` or the explicit non-shipping `test-mock-provider` feature may
+reroute the catalog's OpenRouter HTTPS URL to an explicitly selected 127.0.0.1
+port. See [chat.md](../docs/chat.md) for the GPUI pane and headless smoke. Default
+and shipping `agent` builds do not compile the smoke environment override. The mock verifies the injected test key, not the dummy.
 It verifies incremental pi.live, done settlement and mid-stream Esc followed by
 the abort export. PR4 raw SSE tests additionally cover TTFB/stalled-body abort,
 epoch interruption, byte caps, policy and cancellation wakeups. No real keys

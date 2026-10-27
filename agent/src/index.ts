@@ -231,11 +231,14 @@ async function attachView(conv: Conversation): Promise<void> {
   const emitCommit = (reason: CommitEvent["reason"], value = view.value) => {
     const busy = isBusy(value);
     const head = lastEntryId(value);
+    const follow = value.docs['companion.follow']?.enabled;
     hostEvents.onCommit(JSON.stringify({
       conversationId: conv.id,
       reason,
       busy,
       headEntryId: head,
+      entries: value.entries,
+      followEnabled: typeof follow === 'boolean' ? follow : undefined,
     } satisfies CommitEvent));
     lastHead = head;
     lastBusy = busy;

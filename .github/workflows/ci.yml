@@ -90,3 +90,5 @@ jobs:
           key: agent
       - name: Run component harness, PDF tools, host-auth, streaming and abort tests
         run: scripts/spike-sse.sh --built
+      - name: Run window-independent chat bridge against local SSE
+        run: cargo test -p companion --features test-mock-provider -- --test-threads=1

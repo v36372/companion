@@ -7,6 +7,8 @@ publish.workspace = true
 
 [features]
 default = []
+# Explicit opt-in for headless local mock smoke tests; absent from shipping builds.
+test-mock-provider = ["agent"]
 agent = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wasmtime-wasi-http", "dep:bytes", "dep:http-body", "dep:http-body-util", "dep:hyper", "dep:tokio", "dep:hyper-util", "dep:tokio-rustls", "dep:webpki-roots"]
 
 [dependencies]

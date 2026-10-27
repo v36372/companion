@@ -1093,6 +1093,8 @@ name = "companion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
+ "companion-agent-host",
  "companion-env",
  "companion-pdf",
  "companion-store",
@@ -1102,6 +1104,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "rfd",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "uuid",
