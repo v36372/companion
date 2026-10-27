@@ -27,7 +27,7 @@ pub fn run(path: Option<PathBuf>) {
         // App quit can bypass the native window-close request. Release while
         // the window and its texture atlas are still available in either case.
         cx.on_app_quit(move |cx| {
-            let _ = window.update(cx, |view, window, cx| view.release_pdf(window, cx));
+            let _ = window.update(cx, |view, window, cx| view.close_pdf(window, cx));
             async {}
         })
         .detach();

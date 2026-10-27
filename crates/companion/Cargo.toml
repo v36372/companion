@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 companion-pdf = { path = "../companion-pdf" }
+companion-store = { path = "../companion-store" }
+directories.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 rfd.workspace = true

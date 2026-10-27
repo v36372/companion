@@ -15,10 +15,21 @@ cargo run -p companion --bin learning-companion
 cargo run -p companion --bin learning-companion -- path/to/book.pdf
 ```
 
-Click **Open PDF…** to choose or replace the single open document. The outline
-and agent columns are placeholders; the center viewer provides navigation,
-zoom, text selection, and search. PR1 opens the source file directly (managed
-copies arrive in PR2; document snapshots in PR3).
+Click **Open PDF…** to choose or replace the single open document, or reopen
+one from **Recent**. PDFs are copied before parsing to `docs/<uuid>.pdf` under
+the application data directory; SHA-256 identity deduplicates identical bytes.
+The SQLite catalog lives alongside these copies as `companion.sqlite`.
+
+Paths use `directories::ProjectDirs::from("", "LearningCompanion", "learning-companion")`
+(on Linux, `$XDG_DATA_HOME/learning-companion` or `~/.local/share/learning-companion`).
+For tests/headless runs, `COMPANION_DATA_DIR` overrides the entire data directory.
+
+The app's **Previous/Next** buttons and **Page Up/Page Down** keys save the last
+explicit page after a 500 ms debounce and restore it when reopening a document.
+Pending navigation is flushed on normal shutdown. Wheel scrolling does not update progress. The upstream viewer's own toolbar,
+outline, links, and search have no navigation callback in gpui-pdf 0.6.1 and are
+not tracked; use the app controls for restorable progress. The agent column is
+still a placeholder; document snapshots/outline integration arrive in PR3.
 
 Rust 1.95.0 is pinned: hayro requires 1.92, and GPUI uses `slice::as_array`
 and `hint::cold_path`, stabilized in 1.93 and 1.95. GPUI and its platform

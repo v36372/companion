@@ -5,8 +5,8 @@ use gpui_pdf::{PdfStyle, PdfView};
 
 /// One open viewer. The window owner must call `release` before replacing or closing it.
 ///
-/// PR1 opens the original path directly. Copy-on-open belongs to PR2; PR3 will
-/// add our separately parsed `DocSnapshot` (the accepted double parse in D6).
+/// The app supplies a managed copy-on-open path. PR3 will add our separately
+/// parsed `DocSnapshot` (the accepted double parse in D6).
 pub struct CompanionPdf {
     inner: Entity<PdfView>,
 }
