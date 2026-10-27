@@ -1,0 +1,24 @@
+{
+  "name": "@learning-companion/agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "componentize": "node componentize.mjs",
+    "test:mock": "node mock-provider.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0"
+  },
+  "devDependencies": {
+    "@bytecodealliance/componentize-js": "0.22.0",
+    "@bytecodealliance/jco": "^1.15.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
