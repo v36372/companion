@@ -73,7 +73,8 @@ interface sqlite {
   use types.{sqlite-error, sqlite-value};
   exec: func(sql: string) -> result<_, sqlite-error>;
   run: func(sql: string, params: list<sqlite-value>) -> result<_, sqlite-error>;
-  /// Row encoded as JSON object string; SQL NULL row → none. Not "SQL NULL vs missing".
+  /// JSON object with tagged sqlite-value columns (integer val is decimal text,
+  /// blob val is a byte array). No matching row -> none; SQL NULL is tag null.
   get: func(sql: string, params: list<sqlite-value>) -> result<option<string>, sqlite-error>;
   all: func(sql: string, params: list<sqlite-value>) -> result<string, sqlite-error>;
   begin: func() -> result<_, sqlite-error>;

@@ -1,4 +1,4 @@
-// PR4 capability stubs: no filesystem, SQLite or PDF access.
+// Capability stubs: no filesystem or PDF access yet.
 use super::{AgentHostState, companion::agent::types::*};
 impl super::companion::agent::fs::Host for AgentHostState {
     fn read_text_file(&mut self, _path: String) -> Result<String, FsError> {
@@ -216,47 +216,6 @@ impl super::companion::agent::fs::Host for AgentHostState {
         Err(ExecError {
             code: "shell_unavailable".into(),
             message: "no shell".into(),
-        })
-    }
-}
-impl super::companion::agent::sqlite::Host for AgentHostState {
-    fn exec(&mut self, _sql: String) -> Result<(), SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
-        })
-    }
-    fn run(&mut self, _sql: String, _params: Vec<SqliteValue>) -> Result<(), SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
-        })
-    }
-    fn get(
-        &mut self,
-        _sql: String,
-        _params: Vec<SqliteValue>,
-    ) -> Result<Option<String>, SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
-        })
-    }
-    fn all(&mut self, _sql: String, _params: Vec<SqliteValue>) -> Result<String, SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
-        })
-    }
-    fn begin(&mut self) -> Result<(), SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
-        })
-    }
-    fn commit(&mut self) -> Result<(), SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
-        })
-    }
-    fn rollback(&mut self) -> Result<(), SqliteError> {
-        Err(SqliteError {
-            message: "PR4 stub".into(),
         })
     }
 }
