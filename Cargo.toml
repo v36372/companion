@@ -3,6 +3,7 @@ members = [
   "crates/companion",
   "crates/companion-pdf",
   "crates/companion-agent-host",
+  "crates/companion-store",
 ]
 resolver = "2"
 
