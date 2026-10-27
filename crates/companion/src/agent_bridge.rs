@@ -267,6 +267,9 @@ fn text_parts(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Array(items) => items.iter().map(text_parts).collect::<Vec<_>>().join(""),
+        Value::Object(_) if value["type"] == "toolCall" && value["name"] == "web_search" => {
+            "\n[tool: web_search]\n".into()
+        }
         Value::Object(_) => value
             .get("text")
             .and_then(Value::as_str)
@@ -299,7 +302,19 @@ fn entry_text(entry: &Value) -> Option<String> {
 }
 fn live_text(live: &Value) -> String {
     // pi.live is a snapshot, not a token delta: replace, never append it.
-    text_parts(&live["generation"]["message"]["content"])
+    let mut text = text_parts(&live["generation"]["message"]["content"]);
+    if let Some(tools) = live["tools"].as_array() {
+        for tool in tools.iter().filter(|tool| tool["name"] == "web_search") {
+            let status = match tool["status"].as_str() {
+                Some("pending") => "pending",
+                Some("running") => "running",
+                Some("done") => "done",
+                _ => "pending",
+            };
+            text.push_str(&format!("\n[tool: web_search — {status}]"));
+        }
+    }
+    text
 }
 
 #[cfg(feature = "agent")]
@@ -324,6 +339,7 @@ fn run(
         policy = Policy::mock_provider(&base)?;
         let memory = companion_agent_host::secrets::MemorySecretStore::default();
         memory.write("openrouter", "test-openrouter-key")?;
+        memory.write("brave", "host-brave-test-key")?;
         secrets = Arc::new(memory);
     }
     if secrets
