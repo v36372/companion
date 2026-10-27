@@ -22,6 +22,23 @@ use wasmtime_wasi_http::{
 
 pub const MAX_BYTES: usize = 32 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(120);
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
+const SEARCH_MAX_BYTES: usize = 1024 * 1024;
+const SEARCH_HOST: &str = "api.search.brave.com";
+const SEARCH_PATH: &str = "/res/v1/web/search";
+
+fn request_limits(
+    request: &hyper::Request<HyperOutgoingBody>,
+) -> Result<(Duration, usize), ErrorCode> {
+    if request.uri().host() == Some(SEARCH_HOST) {
+        if request.method() != hyper::Method::GET || request.uri().path() != SEARCH_PATH {
+            return Err(ErrorCode::HttpRequestDenied);
+        }
+        Ok((SEARCH_TIMEOUT, SEARCH_MAX_BYTES))
+    } else {
+        Ok((TIMEOUT, MAX_BYTES))
+    }
+}
 const HOSTS: &[&str] = &[
     "api.openai.com",
     "api.anthropic.com",
@@ -132,6 +149,7 @@ fn inject_headers(
     };
     let key = secrets
         .read(provider)?
+        .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing provider credential"))?;
     let authority = request
         .uri()
@@ -313,15 +331,26 @@ impl WasiHttpView for AgentHostState {
         if let Err(e) = self.policy.check(request.uri(), config.use_tls) {
             return Ok(HostFutureIncomingResponse::ready(Ok(Err(e))));
         }
+        let (timeout, max_bytes) = match request_limits(&request) {
+            Ok(limits) => limits,
+            Err(error) => return Ok(HostFutureIncomingResponse::ready(Ok(Err(error)))),
+        };
+        if request.uri().host() == Some(SEARCH_HOST)
+            && !self.sqlite.websearch_enabled().unwrap_or(false)
+        {
+            return Ok(HostFutureIncomingResponse::ready(Ok(Err(
+                ErrorCode::HttpRequestDenied,
+            ))));
+        }
         let secrets = self.secrets.clone();
         #[cfg(any(test, feature = "test-mock-provider"))]
         let loopback_port = self.policy.loopback_port;
-        config.connect_timeout = config.connect_timeout.min(TIMEOUT);
-        config.first_byte_timeout = config.first_byte_timeout.min(TIMEOUT);
-        config.between_bytes_timeout = config.between_bytes_timeout.min(TIMEOUT);
+        config.connect_timeout = config.connect_timeout.min(timeout);
+        config.first_byte_timeout = config.first_byte_timeout.min(timeout);
+        config.between_bytes_timeout = config.between_bytes_timeout.min(timeout);
         let abort = self.abort.clone();
         let task = wasmtime_wasi::runtime::spawn(async move {
-            let deadline = tokio::time::Instant::now() + TIMEOUT;
+            let deadline = tokio::time::Instant::now() + timeout;
             let send = async move {
                 // Native keychain access may block. Keep it off the agent thread
                 // and inside the cancellable TTFB/total-deadline envelope.
@@ -332,12 +361,12 @@ impl WasiHttpView for AgentHostState {
                 .await
                 .map_err(|_| ErrorCode::HttpRequestDenied)?
                 .map_err(|_| ErrorCode::HttpRequestDenied)?;
-                // Only test builds can reroute the catalog's real baseUrl.
+                // Only test builds can reroute provider/search HTTPS endpoints.
                 #[cfg(any(test, feature = "test-mock-provider"))]
                 let mut request = request;
                 #[cfg(any(test, feature = "test-mock-provider"))]
                 if let Some(port) = loopback_port
-                    && request.uri().host() == Some("openrouter.ai")
+                    && matches!(request.uri().host(), Some("openrouter.ai" | SEARCH_HOST))
                 {
                     let path = request
                         .uri()
@@ -361,6 +390,7 @@ impl WasiHttpView for AgentHostState {
                         inner,
                         abort,
                         total: 0,
+                        max_bytes,
                         done: false,
                         timeout: Box::pin(tokio::time::sleep_until(deadline)),
                     }
@@ -377,6 +407,7 @@ struct BoundedBody {
     inner: HyperIncomingBody,
     abort: Abort,
     total: usize,
+    max_bytes: usize,
     done: bool,
     timeout: Pin<Box<tokio::time::Sleep>>,
 }
@@ -410,7 +441,7 @@ impl Body for BoundedBody {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     self.total += data.len();
-                    if self.total > MAX_BYTES {
+                    if self.total > self.max_bytes {
                         self.done = true;
                         return Poll::Ready(Some(Err(ErrorCode::HttpResponseBodySize(Some(
                             self.total as u64,
@@ -507,6 +538,7 @@ mod tests {
                 "Bearer host-key",
             ),
             ("api.anthropic.com", "anthropic", "x-api-key", "host-key"),
+            (SEARCH_HOST, "brave", "x-subscription-token", "host-key"),
         ] {
             secrets.write(provider, "host-key").unwrap();
             let body = http_body_util::Empty::<Bytes>::new()
@@ -538,6 +570,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn search_endpoint_and_limits_are_host_enforced() {
+        let make = |method, path| {
+            hyper::Request::builder()
+                .method(method)
+                .uri(format!("https://{SEARCH_HOST}{path}"))
+                .body(
+                    http_body_util::Empty::<Bytes>::new()
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            request_limits(&make("GET", SEARCH_PATH)).unwrap(),
+            (Duration::from_secs(10), 1024 * 1024)
+        );
+        assert!(request_limits(&make("POST", SEARCH_PATH)).is_err());
+        assert!(request_limits(&make("GET", "/other")).is_err());
+        wasmtime_wasi::runtime::with_ambient_tokio_runtime(|| {
+            let mut body = body(Abort::default());
+            body.max_bytes = SEARCH_MAX_BYTES;
+            let waker = Waker::from(Arc::new(WakeCount(std::sync::atomic::AtomicUsize::new(0))));
+            let mut cx = Context::from_waker(&waker);
+            assert!(matches!(
+                Pin::new(&mut body).poll_frame(&mut cx),
+                Poll::Ready(Some(Ok(_)))
+            ));
+            assert!(matches!(
+                Pin::new(&mut body).poll_frame(&mut cx),
+                Poll::Ready(Some(Err(ErrorCode::HttpResponseBodySize(_))))
+            ));
+        });
+    }
+
     struct Chunks(usize);
     impl Body for Chunks {
         type Data = Bytes;
@@ -561,6 +628,7 @@ mod tests {
             inner: Chunks(0).boxed(),
             abort,
             total: 0,
+            max_bytes: MAX_BYTES,
             done: false,
             timeout: Box::pin(tokio::time::sleep(TIMEOUT)),
         }

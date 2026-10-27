@@ -1,5 +1,6 @@
 mod durable;
 mod pdf;
+mod websearch;
 
 use super::*;
 use crate::{secrets::MemorySecretStore, wasm::Event};

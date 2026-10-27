@@ -5,7 +5,7 @@ use companion_env::{PdfCommand, VirtualDocFs};
 use companion_pdf::snapshot::{DocMeta, DocSnapshot};
 use serde_json::json;
 
-fn request(socket: &mut std::net::TcpStream) -> String {
+pub(super) fn request(socket: &mut std::net::TcpStream) -> String {
     socket
         .set_read_timeout(Some(Duration::from_secs(15)))
         .unwrap();
@@ -33,7 +33,7 @@ fn request(socket: &mut std::net::TcpStream) -> String {
     }
     String::from_utf8(bytes).unwrap()
 }
-fn stream(socket: &mut std::net::TcpStream, delta: serde_json::Value, finish: &str) {
+pub(super) fn stream(socket: &mut std::net::TcpStream, delta: serde_json::Value, finish: &str) {
     let data = format!(
         "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"id":"pdf-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":delta,"finish_reason":null}]}),

@@ -63,6 +63,17 @@ fn submit_stream_commit_and_uuid_v7() {
     assert_eq!(bridge.transcript, ["Agent\nHello world"]);
 }
 #[test]
+fn search_live_and_committed_tool_traces_hide_query_and_external_results() {
+    let (mut bridge, _, _) = bridge();
+    bridge.event(Event::Stream(json!({"conversationId":10,"live":{"tools":[{"name":"web_search","status":"running","output":"untrusted body"}]}})));
+    assert_eq!(bridge.live, "\n[tool: web_search — running]");
+    bridge.event(Event::Commit(json!({"conversationId":10,"entries":[{"kind":"pi.assistant","model":[{"content":[{"type":"toolCall","name":"web_search","arguments":{"query":"private query"}}]}]}],"busy":false})));
+    assert!(bridge.transcript[0].contains("[tool: web_search]"));
+    assert!(!bridge.transcript[0].contains("private query"));
+    assert!(!bridge.live.contains("untrusted body"));
+}
+
+#[test]
 fn follow_up_is_queued_and_escape_drops_queue() {
     let (mut bridge, rx, cancelled) = bridge();
     bridge.submit("first".into(), None);

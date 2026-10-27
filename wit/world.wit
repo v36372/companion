@@ -83,6 +83,8 @@ interface sqlite {
 }
 
 interface host-events {
+  /// Capability only, never the Brave credential. Read at agent open.
+  websearch-enabled: func() -> bool;
   on-commit: func(bytes: string);  // CommitEvent
   on-stream: func(bytes: string);  // StreamEvent
   on-report: func(bytes: string);  // ReportEvent
