@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -8,7 +9,12 @@ use std::{
     time::Duration,
 };
 
-use companion_pdf::CompanionPdf;
+use companion_pdf::{
+    CompanionPdf,
+    page_index::{page_0_to_1, page_1_to_0},
+    snapshot::{DocMeta, DocSnapshot, LiveSelection},
+    text_layer::{ask_quote, live_selection},
+};
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
 use gpui::{Context, FocusHandle, Window, div, prelude::*, px, rgb};
 
@@ -23,6 +29,9 @@ pub struct CompanionWindow {
     page_0: u32,
     navigation: HashMap<String, (ReadingProgress, Arc<AtomicU64>)>,
     error: Option<String>,
+    selection: Option<(LiveSelection, String)>,
+    agent_quote: Option<String>,
+    open_generation: u64,
 }
 
 fn open_catalog() -> anyhow::Result<(PathBuf, Arc<SqliteHub>)> {
@@ -67,6 +76,9 @@ impl CompanionWindow {
             page_0: 0,
             navigation: HashMap::new(),
             error,
+            selection: None,
+            agent_quote: None,
+            open_generation: 0,
         };
         view.refresh_recent();
         if let Some(path) = path {
@@ -157,9 +169,105 @@ impl CompanionWindow {
         let pdf = CompanionPdf::open(PathBuf::from(&document.stored_path), cx);
         self.page_0 = progress.as_ref().map_or(0, |progress| progress.page_0);
         pdf.goto_page_0(self.page_0 as usize, cx);
+        let weak = cx.weak_entity();
+        pdf.set_on_create_highlight(
+            Rc::new(move |page_0, quote, occurrence, color, _, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.select_quote(
+                        page_0 as u32,
+                        quote,
+                        occurrence as u32,
+                        color.to_string(),
+                        cx,
+                    )
+                });
+            }),
+            cx,
+        );
         self.pdf = Some(pdf);
         self.document = Some(document.clone());
+        self.selection = None;
+        self.agent_quote = None;
+        self.open_generation += 1;
+        let generation = self.open_generation;
+        let copied = document.stored_path.clone();
+        let meta = DocMeta {
+            id: document.id.clone(),
+            title: document.title.clone(),
+            source_path: document.source_path.clone(),
+            sha256: document.sha256.clone(),
+            page_count: 0,
+        };
+        let snapshot_catalog = catalog.clone();
+        let task = cx.background_executor().spawn(async move {
+            let bytes = Arc::new(std::fs::read(copied)?);
+            let snapshot =
+                DocSnapshot::build(bytes, meta).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            snapshot_catalog.set_page_count(&snapshot.meta.id, snapshot.meta.page_count)?;
+            Ok::<_, anyhow::Error>(Arc::new(snapshot))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                // Ignore extraction from a document since replaced.
+                if generation != this.open_generation {
+                    return;
+                }
+                match result {
+                    Ok(snapshot) => {
+                        if let Some(document) = &mut this.document {
+                            document.page_count = Some(snapshot.meta.page_count);
+                        }
+                        if let Some(pdf) = &mut this.pdf {
+                            pdf.snapshot = Some(snapshot);
+                        }
+                        if let Some((selection, _)) = &mut this.selection {
+                            let text = this
+                                .pdf
+                                .as_ref()
+                                .and_then(|pdf| pdf.snapshot.as_ref())
+                                .and_then(|snapshot| {
+                                    snapshot
+                                        .pages
+                                        .get(page_1_to_0(selection.page).unwrap() as usize)
+                                })
+                                .and_then(|page| page.text.as_deref())
+                                .unwrap_or_default();
+                            *selection = live_selection(
+                                page_1_to_0(selection.page).unwrap(),
+                                text,
+                                selection.quote.clone(),
+                                selection.occurrence,
+                            );
+                        }
+                        let page_0 = this.page_0.min(
+                            this.document
+                                .as_ref()
+                                .and_then(|doc| doc.page_count)
+                                .unwrap_or(1)
+                                .saturating_sub(1),
+                        );
+                        if page_0 != this.page_0 {
+                            this.goto_explicit(page_0, cx);
+                        } else if let Some(progress) = this
+                            .document
+                            .as_ref()
+                            .and_then(|document| this.navigation.get(&document.id))
+                            .map(|(progress, _)| progress.clone())
+                        {
+                            // Attaching extraction must not scroll or discard restored progress.
+                            this.persist_navigation(progress, cx);
+                        }
+                        this.refresh_recent();
+                    }
+                    Err(error) => this.error = Some(format!("Cannot extract PDF text: {error:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         self.error = None;
+        self.restore_highlights(cx);
         if let Err(error) = catalog.touch_last_opened(&document.id) {
             self.error = Some(format!("Cannot update recent files: {error:#}"));
         }
@@ -177,22 +285,27 @@ impl CompanionWindow {
     }
 
     fn navigate(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let Some(pdf) = &self.pdf else {
-            return;
-        };
         let page_0 = if forward {
             self.page_0.saturating_add(1)
         } else {
             self.page_0.saturating_sub(1)
         };
-        self.page_0 = match self.document.as_ref().and_then(|doc| doc.page_count) {
+        let page_0 = match self.document.as_ref().and_then(|doc| doc.page_count) {
             Some(count) => page_0.min(count.saturating_sub(1)),
             None => page_0,
         };
-        pdf.goto_page_0(self.page_0 as usize, cx);
+        self.goto_explicit(page_0, cx);
+    }
+
+    fn goto_explicit(&mut self, page_0: u32, cx: &mut Context<Self>) {
+        let Some(pdf) = &self.pdf else {
+            return;
+        };
+        self.page_0 = page_0;
+        pdf.goto_page_0(page_0 as usize, cx);
         self.persist_navigation(
             ReadingProgress {
-                page_0: self.page_0,
+                page_0,
                 scroll_frac: 0.0,
                 viewport_excerpt: None,
             },
@@ -201,7 +314,17 @@ impl CompanionWindow {
         cx.notify();
     }
 
-    fn persist_navigation(&mut self, progress: ReadingProgress, cx: &Context<Self>) {
+    fn persist_navigation(&mut self, mut progress: ReadingProgress, cx: &Context<Self>) {
+        if let Some(snapshot) = self.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref()) {
+            snapshot.record_navigation(progress.page_0, progress.scroll_frac as f32);
+            if progress.viewport_excerpt.is_none() {
+                progress.viewport_excerpt = Some(snapshot.viewport.read().unwrap().excerpt.clone());
+            }
+            *snapshot.selection.write().unwrap() = self
+                .selection
+                .as_ref()
+                .map(|(selection, _)| selection.clone());
+        }
         let (Some(catalog), Some(document)) = (&self.catalog, &self.document) else {
             return;
         };
@@ -239,6 +362,95 @@ impl CompanionWindow {
             .detach();
     }
 
+    fn select_quote(
+        &mut self,
+        page_0: u32,
+        quote: String,
+        occurrence: u32,
+        color: String,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self
+            .pdf
+            .as_ref()
+            .and_then(|pdf| pdf.snapshot.as_ref())
+            .and_then(|snapshot| snapshot.pages.get(page_0 as usize))
+            .and_then(|page| page.text.as_deref())
+            .unwrap_or_default();
+        self.selection = Some((live_selection(page_0, text, quote, occurrence), color));
+        // Selection identifies the page without moving the viewport under the drag.
+        self.page_0 = page_0;
+        self.persist_navigation(
+            ReadingProgress {
+                page_0,
+                scroll_frac: 0.0,
+                viewport_excerpt: None,
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn ask_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some((selection, _)) = &self.selection {
+            self.agent_quote = Some(ask_quote(selection));
+            cx.notify();
+        }
+    }
+
+    fn highlight_selection(&mut self, cx: &mut Context<Self>) {
+        let (Some((selection, color)), Some(document), Some(catalog)) =
+            (&self.selection, &self.document, &self.catalog)
+        else {
+            return;
+        };
+        let highlight = companion_store::highlights::Highlight {
+            id: uuid::Uuid::new_v4().to_string(),
+            document_id: document.id.clone(),
+            page_0: page_1_to_0(selection.page).expect("selection is 1-based"),
+            quote_text: selection.quote.clone(),
+            occurrence: selection.occurrence,
+            color: color.clone(),
+            conversation_entry_id: None,
+        };
+        match catalog.insert_highlight(&highlight) {
+            Ok(_) => self.restore_highlights(cx),
+            Err(error) => self.error = Some(format!("Cannot save highlight: {error:#}")),
+        }
+        cx.notify();
+    }
+
+    fn restore_highlights(&mut self, cx: &mut Context<Self>) {
+        let (Some(catalog), Some(document), Some(pdf)) = (&self.catalog, &self.document, &self.pdf)
+        else {
+            return;
+        };
+        let result = (|| -> anyhow::Result<_> {
+            Ok(catalog
+                .highlights_with_rowids(&document.id)?
+                .into_iter()
+                .map(|(rowid, highlight)| gpui_pdf::Highlight {
+                    id: rowid,
+                    page: highlight.page_0 as usize,
+                    quote: highlight.quote_text,
+                    occurrence: highlight.occurrence as usize,
+                    color: gpui::Hsla::from(rgb(match highlight.color.as_str() {
+                        "green" => 0x86efac,
+                        "blue" => 0x93c5fd,
+                        "pink" => 0xf9a8d4,
+                        "purple" => 0xc4b5fd,
+                        _ => 0xfde047,
+                    })),
+                    region: None,
+                })
+                .collect())
+        })();
+        match result {
+            Ok(highlights) => pdf.set_highlights(highlights, cx),
+            Err(error) => self.error = Some(format!("Cannot restore highlights: {error:#}")),
+        }
+    }
+
     fn pick_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dialog_open {
             return;
@@ -264,9 +476,52 @@ impl CompanionWindow {
 
 impl Render for CompanionWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let center = div().flex_1().min_w_0().h_full();
+        let snapshot = self.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref());
+        let scanned = snapshot
+            .and_then(|snapshot| snapshot.pages.get(self.page_0 as usize))
+            .is_some_and(|page| page.json.no_text_layer);
+        let outline = snapshot
+            .map(|snapshot| snapshot.outline.clone())
+            .unwrap_or_default();
+        let center = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .children(scanned.then(|| {
+                div().p_2().bg(rgb(0x713f12)).child(format!(
+                    "Page {}: This page has no text. (Last explicit navigation)",
+                    page_0_to_1(self.page_0)
+                ))
+            }))
+            .children(self.selection.as_ref().map(|(selection, _)| {
+                div()
+                    .flex()
+                    .p_2()
+                    .gap_3()
+                    .child(format!("Selection · page {}", selection.page))
+                    .child(
+                        div()
+                            .id("ask-selection")
+                            .cursor_pointer()
+                            .px_2()
+                            .bg(rgb(0x3f3f46))
+                            .on_click(cx.listener(|this, _, _, cx| this.ask_selection(cx)))
+                            .child("Ask"),
+                    )
+                    .child(
+                        div()
+                            .id("highlight-selection")
+                            .cursor_pointer()
+                            .px_2()
+                            .bg(rgb(0x3f3f46))
+                            .on_click(cx.listener(|this, _, _, cx| this.highlight_selection(cx)))
+                            .child("Highlight"),
+                    )
+            }));
         let center = match &self.pdf {
-            Some(pdf) => center.child(pdf.view()),
+            Some(pdf) => center.child(div().flex_1().min_h_0().child(pdf.view())),
             None => center
                 .flex()
                 .items_center()
@@ -316,7 +571,7 @@ impl Render for CompanionWindow {
                     .child(div().id("next-page").px_3().cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
                         .child("Next"))
-                    .child(format!("Last explicit page: {}", self.page_0 as u64 + 1)),
+                    .child(format!("Last explicit page: {}", page_0_to_1(self.page_0))),
             )
             .children(self.error.clone().map(|error| div().p_2().text_color(rgb(0xfca5a5)).child(error)))
             .child(
@@ -334,7 +589,15 @@ impl Render for CompanionWindow {
                             .border_color(rgb(0x3f3f46))
                             .id("recent-files")
                             .overflow_y_scroll()
-                            .child("Recent")
+                            .child("Outline")
+                            .children(outline.into_iter().enumerate().map(|(index, item)| {
+                                div().id(gpui::SharedString::from(format!("outline-{index}"))).py_1()
+                                    .pl(px(item.level as f32 * 10.0)).cursor_pointer().child(item.title)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(page_0) = item.page { this.goto_explicit(page_0 as u32, cx); }
+                                    }))
+                            }))
+                            .child(div().py_2().child("Recent"))
                             .child(div().text_sm().py_2().child("Progress tracks app Previous/Next and Page Up/Down, not wheel scroll."))
                             .children(self.recent.iter().cloned().map(|document| {
                                 div().id(gpui::SharedString::from(document.id.clone()))
@@ -351,7 +614,8 @@ impl Render for CompanionWindow {
                             .p_4()
                             .border_l_1()
                             .border_color(rgb(0x3f3f46))
-                            .child("Agent — coming soon"),
+                            .child("Agent — coming soon")
+                            .child(div().py_3().text_sm().child(self.agent_quote.clone().unwrap_or_else(|| "Select text, then Ask. Asking does not save a highlight.".into()))),
                     ),
             )
     }

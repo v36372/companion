@@ -21,19 +21,35 @@ impl SqliteHub {
     }
 
     pub fn highlights(&self, document_id: &str) -> anyhow::Result<Vec<Highlight>> {
+        Ok(self
+            .highlights_with_rowids(document_id)?
+            .into_iter()
+            .map(|(_, highlight)| highlight)
+            .collect())
+    }
+
+    /// SQLite rowid is the viewer's numeric identity; the UUID remains the app
+    /// identity. Read both together so concurrent inserts cannot break the mapping.
+    pub fn highlights_with_rowids(
+        &self,
+        document_id: &str,
+    ) -> anyhow::Result<Vec<(u64, Highlight)>> {
         let connection = self.open_read_only()?;
-        let mut statement = connection.prepare("SELECT id,document_id,page,quote_text,occurrence,color,conversation_entry_id FROM highlights WHERE document_id=?1 ORDER BY page,created_at,rowid")?;
+        let mut statement = connection.prepare("SELECT rowid,id,document_id,page,quote_text,occurrence,color,conversation_entry_id FROM highlights WHERE document_id=?1 ORDER BY page,created_at,rowid")?;
         Ok(statement
             .query_map([document_id], |row| {
-                Ok(Highlight {
-                    id: row.get(0)?,
-                    document_id: row.get(1)?,
-                    page_0: row.get(2)?,
-                    quote_text: row.get(3)?,
-                    occurrence: row.get(4)?,
-                    color: row.get(5)?,
-                    conversation_entry_id: row.get(6)?,
-                })
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    Highlight {
+                        id: row.get(1)?,
+                        document_id: row.get(2)?,
+                        page_0: row.get(3)?,
+                        quote_text: row.get(4)?,
+                        occurrence: row.get(5)?,
+                        color: row.get(6)?,
+                        conversation_entry_id: row.get(7)?,
+                    },
+                ))
             })?
             .collect::<rusqlite::Result<_>>()?)
     }

@@ -8,3 +8,8 @@ publish.workspace = true
 [dependencies]
 gpui.workspace = true
 gpui-pdf.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+companion-store = { path = "../companion-store" }
+tempfile = "3"

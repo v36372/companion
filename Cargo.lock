@@ -991,19 +991,24 @@ dependencies = [
  "companion-pdf",
  "companion-store",
  "directories",
+ "gpui-pdf",
  "gpui-pre",
  "gpui-pre-platform",
  "rfd",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
 name = "companion-pdf"
 version = "0.1.0"
 dependencies = [
+ "companion-store",
  "gpui-pdf",
  "gpui-pre",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]
