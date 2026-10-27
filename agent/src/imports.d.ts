@@ -8,6 +8,7 @@ declare module 'companion:agent/sqlite@0.1.0' {
   export function rollback(): void;
 }
 declare module 'companion:agent/host-events@0.1.0' {
+  export function websearchEnabled(): boolean;
   export function onCommit(json: string): void;
   export function onStream(json: string): void;
   export function onReport(json: string): void;

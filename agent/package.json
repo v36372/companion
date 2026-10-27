@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "node esbuild.mjs",
-    "test": "node --experimental-strip-types --test *.test.mjs && vitest run env.test.ts pdf.test.ts reading.test.ts --maxWorkers=1",
+    "test": "node --experimental-strip-types --test *.test.mjs && vitest run env.test.ts pdf.test.ts websearch.test.ts reading.test.ts --maxWorkers=1",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --moduleResolution bundler --module esnext --target es2022 --lib esnext,dom,dom.iterable,dom.asynciterable --skipLibCheck src/*.ts",
     "componentize": "node componentize.mjs",
     "test:mock": "node mock-provider.mjs"

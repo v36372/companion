@@ -6,7 +6,9 @@ implicit; `off` prevents component loading (there is no sidecar runtime).
 The caller supplies the app's `Arc<SqliteHub>` to the agent thread: production
 uses the same `companion.sqlite`, not a second connection or `agent.sqlite`.
 The host document ExecutionEnv, stock read tool, and seven PDF tools are installed:
-no ambient FS/shell. See [virtual-doc-fs.md](../docs/virtual-doc-fs.md) for the
+no ambient FS/shell. `web_search` is also installed when the host has a nonempty
+Brave credential and `settings.websearch_enabled` is not false. See
+[web search](../docs/websearch.md) for its host-enforced limits and rollout flag. See [virtual-doc-fs.md](../docs/virtual-doc-fs.md) for the
 single-snapshot lifecycle, replay policy, and command channel integration.
 PR4's streaming/abort evidence remains in [SPIKE-RESULTS.md](SPIKE-RESULTS.md).
 
@@ -103,7 +105,13 @@ google). Host-only fallback variables are `COMPANION_OPENROUTER_API_KEY`,
 MemorySecretStore and never instantiate/read the native store for requests.
 A live run needs a user-supplied OpenRouter key in that keychain or host variable,
 a model id chosen from the printed catalog, and outbound HTTPS. No live request
-has been made. Settings persist only provider + modelId in companion-store.
+has been made. Settings persist provider + modelId and the non-secret search
+rollout flag in companion-store.
+
+Brave requests are restricted to GET `/res/v1/web/search`, a 10 s total deadline
+(including key lookup, headers and body), and a 1 MiB running response cap.
+The host overwrites `X-Subscription-Token`; the guest receives only an enabled
+boolean, never the key. Other providers retain the limits described below.
 
 Production HTTP allows only HTTPS:443 to api.openai.com, api.anthropic.com,
 openrouter.ai, generativelanguage.googleapis.com and api.search.brave.com. DNS is

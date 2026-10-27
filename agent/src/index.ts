@@ -17,6 +17,7 @@ import { createPdfExtension } from './extensions/pdf.ts';
 import { createSnapshotReadTool } from './extensions/read.ts';
 import { OpenDoc, FollowMode, ReadingExtension } from './extensions/reading.ts';
 import { userInput } from './user-content.ts';
+import { createWebsearchExtension } from './extensions/websearch.ts';
 import * as fs from 'companion:agent/fs@0.1.0';
 import * as pdfCmd from 'companion:agent/pdf-cmd@0.1.0';
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
@@ -56,6 +57,8 @@ export async function open(configJson: string): Promise<void> {
   const registry = createRegistry();
   registry.install(createPdfExtension(pdfCmd));
   registry.install(ReadingExtension);
+  const websearch = createWebsearchExtension(hostEvents.websearchEnabled());
+  if (websearch) registry.install(websearch);
   registry.install({ name: 'read', tools: [createSnapshotReadTool()] });
   database = new HostSqliteDatabase(sqlite);
   const storage = await SqliteStorage.open(database, { prefix: 'pi_' });

@@ -163,6 +163,15 @@ pub fn instantiate(
 
 impl companion::agent::types::Host for AgentHostState {}
 impl companion::agent::host_events::Host for AgentHostState {
+    fn websearch_enabled(&mut self) -> bool {
+        self.sqlite.websearch_enabled().unwrap_or(false)
+            && self
+                .secrets
+                .read("brave")
+                .ok()
+                .flatten()
+                .is_some_and(|key| !key.trim().is_empty())
+    }
     fn on_commit(&mut self, json: String) {
         // Includes initial attachment: a reopened conversation's durable flag
         // must replace the fresh virtual filesystem's default as well as the UI.
