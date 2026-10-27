@@ -7,13 +7,15 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import {
   createRegistry,
   Harness,
-  MemoryStorage,
   defineDoc,
   type Conversation,
   type ConversationId,
   type AgentChange as DurableAgentChange,
 } from "@earendil-works/pi-durable";
 
+import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
+import * as sqlite from 'companion:agent/sqlite@0.1.0';
+import { HostSqliteDatabase } from './storage.ts';
 import { dummyCredentials } from "./credentials.ts";
 import type {
   OpenConfig, OpenDocumentReq, OpenDocumentRes, SubmitReq, SubmitRes, CommitEvent, StreamEvent,
@@ -32,6 +34,8 @@ const FollowMode = defineDoc({
 });
 
 let harness: Harness | undefined;
+let database: HostSqliteDatabase;
+let creatingDocument: OpenDocumentReq | undefined;
 let attached: { conv: Conversation; dispose: () => void } | undefined;
 
 function installProvider(models: ReturnType<typeof createModels>, provider: OpenConfig["provider"]) {
@@ -54,7 +58,8 @@ export async function open(configJson: string): Promise<void> {
 
   const registry = createRegistry();
   // Tools / host ExecutionEnv arrive with PR7. No shell or ambient FS.
-  const storage = new MemoryStorage();
+  database = new HostSqliteDatabase(sqlite);
+  const storage = await SqliteStorage.open(database, { prefix: 'pi_' });
   hostEvents.onReport(JSON.stringify({ type: 'models', message: JSON.stringify(models.getModels()) }));
 
   harness = await Harness.open(
@@ -63,8 +68,12 @@ export async function open(configJson: string): Promise<void> {
       models,
       registry,
       conversationCreated: async (tx, conversation) => {
-        await tx.doc(OpenDoc, conversation.id);
+        const doc = await tx.doc(OpenDoc, conversation.id);
         await tx.doc(FollowMode, conversation.id);
+        if (creatingDocument) {
+          Object.assign(doc, { documentId: creatingDocument.documentId,
+            title: creatingDocument.title, pageCount: creatingDocument.pageCount });
+        }
       },
       identity: {
         attribution: { name: "learning-companion", url: "https://learning-companion.local" },
@@ -91,26 +100,32 @@ export async function open(configJson: string): Promise<void> {
 export async function openDocument(reqJson: string): Promise<string> {
   if (!harness) throw new Error("harness closed");
   const req = JSON.parse(reqJson) as OpenDocumentReq;
+  if (!await database.get('SELECT id FROM documents WHERE id = ?', req.documentId))
+    throw new Error('unknown document');
+  const mapped = await database.get<{ conversation_id: number }>(
+    'SELECT conversation_id FROM conversations_map WHERE document_id = ?', req.documentId);
   let conv: Conversation;
-  if (req.conversationId !== undefined) {
-    conv = await conversation(req.conversationId);
+  if (mapped) {
+    if (req.conversationId !== undefined && req.conversationId !== mapped.conversation_id)
+      throw new Error('conversation does not belong to document');
+    conv = await conversation(mapped.conversation_id);
   } else {
-    conv = await harness.createConversation(
-      {
-        ownership: { kind: "ownerless" },
-        agent: {
-          model: { provider: req.provider, modelId: req.modelId },
-          cwd: "/doc",
+    if (req.conversationId !== undefined) throw new Error('document has no conversation mapping');
+    creatingDocument = req;
+    try {
+      conv = await harness.createConversation(
+        {
+          ownership: { kind: "ownerless" },
+          agent: {
+            model: { provider: req.provider, modelId: req.modelId },
+            cwd: "/doc",
+          },
         },
-      },
-      BACKGROUND_CONTEXT,
-    );
-    await conv.commit(async (tx) => {
-      const doc = await tx.doc(OpenDoc, conv.id);
-      doc.documentId = req.documentId;
-      doc.title = req.title;
-      doc.pageCount = req.pageCount;
-    }, BACKGROUND_CONTEXT);
+        BACKGROUND_CONTEXT,
+      );
+    } finally { creatingDocument = undefined; }
+    await database.run('INSERT INTO conversations_map(document_id, conversation_id) VALUES (?, ?)',
+      req.documentId, conv.id);
   }
   await attachView(conv);
   const res: OpenDocumentRes = { conversationId: conv.id };

@@ -1,10 +1,11 @@
-# Component agent (PR5)
+# Component agent (PR6)
 
-The guest now runs the actual **pi-durable 1.4.0 Harness with MemoryStorage** and
+The guest runs the **pi-durable 1.4.0 Harness with SqliteStorage** and
 pi-ai 1.4.0 providers. OpenRouter is the default. `COMPANION_AGENT=wasm` is
-implicit; `off` prevents component loading (there is no sidecar runtime). MemoryStorage deliberately loses
-conversations on close/trap/restart; SQLite/checkpoint recovery is PR6. Tools and
-the host document ExecutionEnv are PR7+: this harness grants no ambient FS/shell.
+implicit; `off` prevents component loading (there is no sidecar runtime).
+The caller supplies the app's `Arc<SqliteHub>` to the agent thread: production
+uses the same `companion.sqlite`, not a second connection or `agent.sqlite`.
+Tools and the host document ExecutionEnv are PR7+: no ambient FS/shell.
 PR4's streaming/abort evidence remains in [SPIKE-RESULTS.md](SPIKE-RESULTS.md).
 
 ## Build and test (no real credentials)
@@ -55,7 +56,38 @@ wakes pending HTTP headers/body pollables. After submit unwinds the host calls
 the abort export. Retries are disabled and afterFailedRun is withdraw. Crash
 recovery uses open + resume-wait, never Esc. A trapped Store/resource table is
 dropped, a new instance is opened, then abort/resume-wait is attempted. With
-MemoryStorage there is no checkpoint to recover yet (PR6).
+SQLite the last committed checkpoint survives the lost Store.
+
+## Storage / recovery
+
+`HostSqliteDatabase` implements chord's promise-based facade. WIT parameters use
+`sqlite-value` (never JSON parameters). Returned JSON rows contain tagged column
+values: integers are decimal strings and blobs are byte arrays; the facade
+restores safe integers to numbers, larger s64 values to bigint, and blobs to
+Uint8Array. Text is never interpreted as an encoding marker.
+
+`transaction(cb)` permits only the transaction handle. Database operations,
+including nested transaction/close, never settle inside the callback, per chord.
+Expired handles reject. Host transaction ownership is per Store; a Condvar keeps
+app writers and other Stores out until commit/rollback. Store drop rolls back
+an abandoned transaction and wakes writers. Do not hold a hub lock while waiting
+on an agent command. WAL readers on query-only connections see committed state.
+
+Only pi-durable creates/migrates `pi_` tables; app migrations never recreate them.
+Open-document requires an existing catalog document, creates an ownerless
+conversation with a model, seeds OpenDoc/FollowMode in conversationCreated, then
+stores `conversations_map`. Reopening the document attaches that conversation.
+There is a small crash window between conversation creation and map insertion:
+a crash there can leave an unused ownerless conversation, never a map pointing
+to a missing conversation. Notes remain blobs in the app `notes` table.
+
+Crash recovery is **open(config), open-document (attach), resume-wait**. The last
+step calls resume + waitForIdle on-stack. Esc instead cancels HTTP, lets submit
+unwind, then calls abort; it must not resume the cancelled generation. Unexpected
+traps drop the Store before opening a new instance on the same hub. The mock
+crash test interrupts the actual streaming submit, drops the Store without
+close/abort, reopens the SQLite file (including app migrations), reattaches and
+finishes via resume-wait. No real credentials or external requests are needed.
 
 ## Host secrets / production HTTP
 

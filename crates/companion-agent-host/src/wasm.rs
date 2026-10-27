@@ -40,6 +40,8 @@ pub enum Event {
 }
 
 pub struct AgentHostState {
+    pub sqlite: std::sync::Arc<companion_store::SqliteHub>,
+    sqlite_owner: u64,
     pub secrets: std::sync::Arc<dyn crate::secrets::SecretStore>,
     pub abort: Abort,
     pub policy: Policy,
@@ -49,12 +51,18 @@ pub struct AgentHostState {
     pub http: WasiHttpCtx,
 }
 impl AgentHostState {
-    pub fn new(abort: Abort, policy: Policy, events: Sender<Event>) -> Self {
+    pub fn new(
+        abort: Abort,
+        policy: Policy,
+        events: Sender<Event>,
+        sqlite: std::sync::Arc<companion_store::SqliteHub>,
+    ) -> Self {
         Self::with_secrets(
             abort,
             policy,
             events,
             std::sync::Arc::new(crate::secrets::KeychainStore),
+            sqlite,
         )
     }
     pub fn with_secrets(
@@ -62,12 +70,16 @@ impl AgentHostState {
         policy: Policy,
         events: Sender<Event>,
         secrets: std::sync::Arc<dyn crate::secrets::SecretStore>,
+        sqlite: std::sync::Arc<companion_store::SqliteHub>,
     ) -> Self {
         let mut wasi = WasiCtxBuilder::new();
         // Diagnostics only, never inherited environment or filesystem access.
         #[cfg(test)]
         wasi.inherit_stderr();
+        static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            sqlite,
+            sqlite_owner: NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             secrets,
             abort,
             policy,
@@ -77,6 +89,11 @@ impl AgentHostState {
             wasi: wasi.build(),
             http: WasiHttpCtx::new(),
         }
+    }
+}
+impl Drop for AgentHostState {
+    fn drop(&mut self) {
+        self.sqlite.release(self.sqlite_owner);
     }
 }
 impl WasiView for AgentHostState {
@@ -153,4 +170,7 @@ impl companion::agent::host_events::Host for AgentHostState {
     }
 }
 
+mod sqlite;
+#[cfg(test)]
+mod sqlite_tests;
 mod stubs;

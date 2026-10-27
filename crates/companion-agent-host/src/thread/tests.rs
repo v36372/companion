@@ -1,3 +1,5 @@
+mod durable;
+
 use super::*;
 use crate::{secrets::MemorySecretStore, wasm::Event};
 use std::{
@@ -5,6 +7,10 @@ use std::{
     net::TcpListener,
     time::{Duration, Instant},
 };
+
+fn test_hub() -> Arc<companion_store::SqliteHub> {
+    Arc::new(companion_store::SqliteHub::open(":memory:").unwrap())
+}
 
 fn server(delay_headers: bool, delay_body: bool) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -56,6 +62,7 @@ fn run_case(
         secrets,
         rx,
         events,
+        test_hub(),
     );
     match received.recv_timeout(Duration::from_secs(300)).unwrap() {
         Event::Ready {
@@ -160,7 +167,14 @@ fn spike_sse() {
     let abort = Abort::default();
     let (tx, rx) = crossbeam_channel::unbounded();
     let (events, received) = crossbeam_channel::unbounded();
-    let thread = spawn(runtime, abort.clone(), Policy::default(), rx, events);
+    let thread = spawn(
+        runtime,
+        abort.clone(),
+        Policy::default(),
+        rx,
+        events,
+        test_hub(),
+    );
     assert!(matches!(
         received.recv_timeout(Duration::from_secs(300)).unwrap(),
         Event::Ready { .. }
@@ -236,6 +250,11 @@ fn model_server() -> (u16, std::thread::JoinHandle<()>) {
 
 fn real_submit(abort_mid_stream: bool) {
     let (port, server) = model_server();
+    let hub = test_hub();
+    hub.write(|c| {
+        c.execute("INSERT INTO documents(id,title,source_path,stored_path,sha256) VALUES ('local-test','Mock PDF','','','test')", [])?;
+        Ok(())
+    }).unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
     let (events, received) = crossbeam_channel::unbounded();
     let secrets = Arc::new(MemorySecretStore::default());
@@ -247,9 +266,10 @@ fn real_submit(abort_mid_stream: bool) {
         Policy {
             loopback_port: Some(port),
         },
-        secrets,
+        secrets.clone(),
         rx,
         events,
+        hub.clone(),
     );
     assert!(matches!(
         received.recv_timeout(Duration::from_secs(300)).unwrap(),
@@ -366,10 +386,49 @@ fn real_submit(abort_mid_stream: bool) {
     tx.send(Command::Close).unwrap();
     thread.join().unwrap().unwrap();
     server.join().unwrap();
+    if abort_mid_stream {
+        // A completed Esc is durable too: restart must not resurrect the run.
+        let (events, received) = crossbeam_channel::unbounded();
+        let state = AgentHostState::with_secrets(
+            Abort::default(),
+            Policy {
+                loopback_port: Some(port),
+            },
+            events,
+            secrets,
+            hub,
+        );
+        let (mut store, guest) = wasm::instantiate(&runtime(), state).unwrap();
+        guest
+            .call_open(
+                &mut store,
+                r#"{"provider":"openrouter","modelId":"~anthropic/claude-haiku-latest"}"#,
+            )
+            .unwrap()
+            .unwrap();
+        let json = guest.call_open_document(&mut store, r#"{"documentId":"local-test","title":"Mock PDF","pageCount":1,"provider":"openrouter","modelId":"~anthropic/claude-haiku-latest"}"#).unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["conversationId"],
+            id
+        );
+        guest.call_resume_wait(&mut store).unwrap().unwrap();
+        for event in received.try_iter() {
+            match event {
+                Event::Chunk { json, .. } => {
+                    assert!(!json.contains("token"), "Esc must not resume: {json}")
+                }
+                Event::Report(json) => {
+                    assert!(json.contains("models"), "no model retry after Esc: {json}")
+                }
+                _ => (),
+            }
+        }
+        guest.call_close(&mut store).unwrap();
+    }
 }
 
 #[test]
-fn memory_harness_openrouter_submit_and_escape() {
+fn sqlite_harness_openrouter_submit_and_escape() {
     let _serial = serial();
     real_submit(false);
     real_submit(true);
@@ -378,7 +437,7 @@ fn memory_harness_openrouter_submit_and_escape() {
 #[test]
 fn wasi_environment_is_empty() {
     let (events, _) = crossbeam_channel::unbounded();
-    let mut state = AgentHostState::new(Abort::default(), Policy::default(), events);
+    let mut state = AgentHostState::new(Abort::default(), Policy::default(), events, test_hub());
     assert!(state.wasi.cli().environment.is_empty());
 }
 
@@ -389,7 +448,14 @@ fn trap_reinstantiates_and_opens_before_resume() {
     let engine = runtime.engine.clone();
     let (tx, rx) = crossbeam_channel::unbounded();
     let (events, received) = crossbeam_channel::unbounded();
-    let thread = spawn(runtime, Abort::default(), Policy::default(), rx, events);
+    let thread = spawn(
+        runtime,
+        Abort::default(),
+        Policy::default(),
+        rx,
+        events,
+        test_hub(),
+    );
     assert!(matches!(
         received.recv_timeout(Duration::from_secs(300)).unwrap(),
         Event::Ready { .. }

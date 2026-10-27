@@ -11,6 +11,8 @@ agent = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wasmtime-wasi-http", "dep:byt
 
 [dependencies]
 anyhow.workspace = true
+companion-store = { path = "../companion-store" }
+rusqlite.workspace = true
 crossbeam-channel.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -27,3 +29,6 @@ tokio-rustls = { version = "0.25", optional = true }
 webpki-roots = { version = "0.26", optional = true }
 # Use wasmtime-wasi's internal runtime (including keychain blocking work); never construct one here.
 tokio = { version = "1", features = ["time", "sync", "macros", "net"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

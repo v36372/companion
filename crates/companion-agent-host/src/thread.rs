@@ -44,6 +44,7 @@ pub fn spawn(
     policy: Policy,
     commands: Receiver<Command>,
     events: Sender<Event>,
+    sqlite: Arc<companion_store::SqliteHub>,
 ) -> std::thread::JoinHandle<anyhow::Result<()>> {
     spawn_with_secrets(
         runtime,
@@ -52,6 +53,7 @@ pub fn spawn(
         Arc::new(KeychainStore),
         commands,
         events,
+        sqlite,
     )
 }
 
@@ -62,6 +64,7 @@ pub fn spawn_with_secrets(
     secrets: Arc<dyn SecretStore>,
     commands: Receiver<HostToGuest>,
     events: Sender<GuestToHost>,
+    sqlite: Arc<companion_store::SqliteHub>,
 ) -> std::thread::JoinHandle<anyhow::Result<()>> {
     std::thread::Builder::new()
         .name("companion-agent".into())
@@ -72,6 +75,7 @@ pub fn spawn_with_secrets(
                     policy.clone(),
                     events.clone(),
                     secrets.clone(),
+                    sqlite.clone(),
                 )
             };
             let (mut store, mut guest) = wasm::instantiate(&runtime, state())?;

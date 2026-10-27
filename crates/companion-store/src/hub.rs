@@ -1,19 +1,22 @@
+use parking_lot::{Condvar, Mutex};
+use rusqlite::{Connection, OpenFlags};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
-use parking_lot::Mutex;
-use rusqlite::{Connection, OpenFlags};
+struct Writer {
+    connection: Connection,
+    txn_depth: usize,
+    txn_owner: Option<u64>,
+}
 
-/// One writer for app and (eventually) guest tables in this process.
-///
-/// Never hold this lock across a HostToGuest send-and-wait. Commit first.
-/// PR6 must add txn_depth/txn_owner + a Condvar before exposing multi-call
-/// guest transactions: unrelated writers must wait outside an active guest tx.
+/// One writer for app and guest tables. Never hold this lock across a
+/// HostToGuest send-and-wait: commit the app operation first.
 pub struct SqliteHub {
     path: PathBuf,
-    writer: Mutex<Connection>,
+    writer: Mutex<Writer>,
+    available: Condvar,
 }
 
 impl SqliteHub {
@@ -25,16 +28,77 @@ impl SqliteHub {
         crate::schema::migrate(&mut connection)?;
         Ok(Self {
             path,
-            writer: Mutex::new(connection),
+            writer: Mutex::new(Writer {
+                connection,
+                txn_depth: 0,
+                txn_owner: None,
+            }),
+            available: Condvar::new(),
         })
     }
 
-    /// A short, serialized writer operation. Do not retain the connection.
+    /// App writes cannot accidentally join an on-stack guest transaction.
     pub fn write<T>(
         &self,
         operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
-        operation(&mut self.writer.lock())
+        self.access(None, operation)
+    }
+
+    fn access<T>(
+        &self,
+        owner: Option<u64>,
+        operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let mut writer = self.writer.lock();
+        while writer.txn_depth > 0 && writer.txn_owner != owner {
+            self.available.wait(&mut writer);
+        }
+        operation(&mut writer.connection)
+    }
+
+    /// The owner identifies a Store, not a thread (Stores can be replaced).
+    pub fn guest<T>(
+        &self,
+        owner: u64,
+        operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        self.access(Some(owner), operation)
+    }
+
+    pub fn begin(&self, owner: u64) -> anyhow::Result<()> {
+        let mut writer = self.writer.lock();
+        while writer.txn_depth > 0 && writer.txn_owner != Some(owner) {
+            self.available.wait(&mut writer);
+        }
+        anyhow::ensure!(writer.txn_depth == 0, "nested guest transaction");
+        writer.connection.execute_batch("BEGIN IMMEDIATE")?;
+        writer.txn_owner = Some(owner);
+        writer.txn_depth = 1;
+        Ok(())
+    }
+
+    pub fn end(&self, owner: u64, commit: bool) -> anyhow::Result<()> {
+        let mut writer = self.writer.lock();
+        anyhow::ensure!(writer.txn_owner == Some(owner), "not transaction owner");
+        writer
+            .connection
+            .execute_batch(if commit { "COMMIT" } else { "ROLLBACK" })?;
+        writer.txn_depth = 0;
+        writer.txn_owner = None;
+        self.available.notify_all();
+        Ok(())
+    }
+
+    /// Roll back an abandoned transaction before a trapped Store is replaced.
+    pub fn release(&self, owner: u64) {
+        let mut writer = self.writer.lock();
+        if writer.txn_owner == Some(owner) {
+            let _ = writer.connection.execute_batch("ROLLBACK");
+            writer.txn_depth = 0;
+            writer.txn_owner = None;
+            self.available.notify_all();
+        }
     }
 
     pub fn open_read_only(&self) -> anyhow::Result<Connection> {
@@ -50,9 +114,12 @@ impl SqliteHub {
 
 impl Drop for SqliteHub {
     fn drop(&mut self) {
-        let _ = self
-            .writer
-            .get_mut()
+        let writer = self.writer.get_mut();
+        if writer.txn_depth > 0 {
+            let _ = writer.connection.execute_batch("ROLLBACK");
+        }
+        let _ = writer
+            .connection
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     }
 }
