@@ -4,5 +4,6 @@ pub mod highlights;
 mod hub;
 pub mod progress;
 mod schema;
+pub mod settings;
 
 pub use hub::SqliteHub;

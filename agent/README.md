@@ -1,93 +1,117 @@
-# PR4: on-stack SSE spike
+# Component agent (PR5)
 
-This is a capability/abort spike, not a working Durable harness. Production WIT
-exports and fs/sqlite/pdf imports are present but return explicit stub errors.
-There is no dependency on the PDF crates.
+The guest now runs the actual **pi-durable 1.4.0 Harness with MemoryStorage** and
+pi-ai 1.4.0 providers. OpenRouter is the default. `COMPANION_AGENT=wasm` is
+implicit; `off` prevents component loading (there is no sidecar runtime). MemoryStorage deliberately loses
+conversations on close/trap/restart; SQLite/checkpoint recovery is PR6. Tools and
+the host document ExecutionEnv are PR7+: this harness grants no ambient FS/shell.
+PR4's streaming/abort evidence remains in [SPIKE-RESULTS.md](SPIKE-RESULTS.md).
 
-## Reproduce
+## Build and test (no real credentials)
 
-Requires Node 22.19+ (CI uses 22; local validation uses 24), the pinned Rust
-toolchain and enough space for Wasmtime/Cranelift.
+Node 22.19+ and the pinned Rust toolchain are required. Linux keyring needs
+`pkg-config` and `libdbus-1-dev` (the supplied VM sysroot includes these).
 
 ```sh
-scripts/spike-sse.sh
-# Already componentized:
-scripts/spike-sse.sh --built
-# Extra policy / 32 MiB running-cap / cancellation wakeup tests:
-cargo test -p companion-agent-host --features agent
-# Optional real pi-ai provider against ONLY a local mock (Node, not Wasm):
-cd agent && npm run test:mock
+cd agent
+npm ci
+npm test
+npm run typecheck
+npm run build
+npm run componentize
+cd ..
+cargo test -p companion-agent-host --features agent -- --nocapture --test-threads=1
 ```
 
-The script runs a loopback chunked SSE server, 30 events at 100 ms intervals.
-`spikeSse` awaits fetch and iterates `response.body` inside the export, calling
-`on-stream` per raw byte chunk (not per parsed event). Tests require at least ten
-incremental chunks, an early first chunk and at least ten 50–250 ms gaps.
-StarlingMonkey's body lacks `Symbol.asyncIterator`; a small standards adapter
-uses `getReader().read()` to yield each chunk directly. There is no buffering
-or timer-generated data. Guest exceptions are converted to string payloads for
-WIT `result<_, string>` (raw DOMException/Error payloads cannot be lowered).
-Other cases abort after five chunks, during delayed headers, and after headers
-with a stalled body. Each abort must return an error within one second;
-delayed-header/body cases abort at 500 ms and must finish within one second of
-starting. A final busy-loop export must trap after an epoch increment.
+Default workspace builds/tests need neither Node nor the generated Wasm. The
+`agent` feature includes `crates/companion-agent-host/src/agent-core.wasm` (ignored
+by git). `build.rs` reports how to create it when missing. The independent CI
+agent job componentizes and runs all host tests. Tests compile the component
+**once per test binary** using OnceLock, then create fresh Stores for each case.
+Uncached component compilation is expensive; see the PR4 evidence for timings.
 
-`Abort::request()` sets an AtomicBool **and wakes registered header/body futures**.
-Setting only an atomic or incrementing the epoch cannot wake a blocked WASI poll.
-The host owns its Store on a plain std::thread, blocking on crossbeam `recv`.
-The HTTP async tasks run on Wasmtime-WASI's internal runtime; the agent thread
-never creates a runtime or calls block_on. Wasmtime 36.0.19 no longer accepts
-`bindgen async: false`; `imports/exports: { default: ignore_wit }` explicitly
-produces synchronous bindings instead. Trapped instances are dropped, never
-reused. Full reinstantiate + open + abort/resume is PR5, not implemented here.
+The local mock test goes through the actual Wasm Harness, catalog-selected
+OpenRouter provider, fetch, host SecretStore overwrite and streaming response.
+Only `cfg(test)` may reroute the catalog's OpenRouter HTTPS URL to an explicitly
+selected 127.0.0.1 port. The mock verifies the injected test key, not the dummy.
+It verifies incremental pi.live, done settlement and mid-stream Esc followed by
+the abort export. PR4 raw SSE tests additionally cover TTFB/stalled-body abort,
+epoch interruption, byte caps, policy and cancellation wakeups. No real keys
+are used, read or searched for by tests.
 
-## Feature/artifact boundary
+## Boundary and lifecycle
 
-Default features are empty. `agent` enables all Wasmtime/HTTP code and the
-`include_bytes!` of `crates/companion-agent-host/src/agent-core.wasm`. build.rs
-checks the file **only if CARGO_FEATURE_AGENT is set**, with an actionable
-`npm run componentize` error. Default workspace build/test needs neither Node
-nor a Wasm file. The generated artifact and node_modules/dist are gitignored.
-The independent CI agent job uploads the component and extracted WIT, then runs
-the spike; the Rust/PDF job does not depend on it.
+`src/protocol.ts` defines the JSON payloads. `open`, `open-document`, `close`,
+`submit`, `resume-wait`, `abort`, `set-follow` and `configure` are real exports.
+`submit` awaits `submission.wait(BACKGROUND_CONTEXT)` **on-stack**; there is no
+poll pump. The view is subscribed before submit. Live changes use on-stream;
+on-commit carries only head-entry / busy transitions plus initial attachment.
+`models.getModels()` is sent once per open via on-report; choose a model id from
+that catalog rather than assuming the design's example id exists.
 
-## Security / intentional spike limits
+The host thread owns its synchronous Store. Send HostToGuest commands, consume
+GuestToHost events. Call `Abort::request()` for Esc (not just the atomic): this
+wakes pending HTTP headers/body pollables. After submit unwinds the host calls
+the abort export. Retries are disabled and afterFailedRun is withdraw. Crash
+recovery uses open + resume-wait, never Esc. A trapped Store/resource table is
+dropped, a new instance is opened, then abort/resume-wait is attempted. With
+MemoryStorage there is no checkpoint to recover yet (PR6).
 
-- No keys were used or searched for. A real OpenRouter request is blocked-on-key.
-- All three Earendil packages installed successfully at exactly 1.4.0. The raw
-  Wasm SSE spike is deliberately independent of them. `test:mock` exercises the
-  actual pi-ai OpenRouter provider and OpenAI-compatible parser against localhost
-  using an explicit dummy CredentialStore and empty AuthContext, in Node only.
-- The production HTTP policy checks the normative HTTPS hostname/port allowlist,
-  then **denies external traffic** until PR5 supplies keychain injection and
-  DNS/private-address pinning. It never leaks guest Authorization. This is a
-  deliberate fail-closed deviation, not a shipping provider proxy.
-- Only `#[cfg(test)]` can enable HTTP 127.0.0.1, scoped to one server port. No env
-  switch enables it in production. No response/request bodies are logged.
-- The response is header-first and piped through a running 32 MiB cap and a
-  120-second total deadline; it is never collected. Guest timeouts are capped.
-- ComponentizeJS 0.22.0 supports `stdio`, `random`, `clocks`, `http`, `fetch-event`
-  feature toggles, not `cli` or `filesystem`. We disable fetch-event and pass
-  `env: {}` to Wizer. The host builds a fresh EMPTY WasiCtx: no inherited env,
-  args or preopened directories (tests inherit stderr only for diagnostics). Thus retained filesystem/CLI imports
-  grant no host capabilities. No `disable: cli` environ trap workaround is needed.
-- npm audit reports a critical `decompress` archive-extraction advisory through
-  the pinned componentize-js/weval build-tool chain (plus two moderate entries).
-  Do not use these pinned build tools on untrusted archives; upgrading the
-  mandated componentize-js pin needs a separate dependency review.
+## Host secrets / production HTTP
 
-## WASI versions
+`SecretStore` supports native keychain read/write/delete. `KeychainStore` uses
+service `learning-companion`, account `openrouter` (also openai, anthropic, brave,
+google). Host-only fallback variables are `COMPANION_OPENROUTER_API_KEY`,
+`COMPANION_OPENAI_API_KEY`, `COMPANION_ANTHROPIC_API_KEY`,
+`COMPANION_BRAVE_API_KEY`, `COMPANION_GOOGLE_API_KEY`. Tests explicitly pass a
+MemorySecretStore and never instantiate/read the native store for requests.
+A live run needs a user-supplied OpenRouter key in that keychain or host variable,
+a model id chosen from the printed catalog, and outbound HTTPS. No live request
+has been made. Settings persist only provider + modelId in companion-store.
 
-`cd agent && npx jco wit ../crates/companion-agent-host/src/agent-core.wasm`
-reports `wasi:{io,cli,clocks,filesystem,random,http}@0.2.10`. The pinned
-wasmtime-wasi / wasmtime-wasi-http 36.0.19 sources declare **0.2.6**, not 0.2.10.
-These are not exact version matches. Wasmtime's component linker consults
-semver-compatible interface names. Successful instantiation and the streaming
-harness are the compatibility check for the interfaces actually used here;
-do not infer that every new 0.2.10 interface is available in 36.0.19.
+Production HTTP allows only HTTPS:443 to api.openai.com, api.anthropic.com,
+openrouter.ai, generativelanguage.googleapis.com and api.search.brave.com. DNS is
+resolved once; all results must be public; TCP connects to a validated IP while
+TLS validates the original hostname. Redirects are not followed. Authorization,
+API-key and provider identity headers are stripped and replaced from host data;
+missing keys fail closed. Responses are header-first, piped through a 32 MiB
+running cap and a 120 s total deadline. Native keychain reads run on the internal
+runtime's blocking pool, inside the cancellable header/deadline envelope. Logs contain method/host/status/bytes,
+not headers, paths, keys or bodies. The host builds EMPTY WASI env/args with no
+preopens. No ambient guest auth context is consulted.
 
-The spike sets Cranelift `OptLevel::None` and compiles the immutable component
-once, then instantiates fresh Stores for every case (never reuse a trapped one).
-The test prints both `instantiate=...` cold-start milliseconds and separate
-`compile=...` Cranelift milliseconds. Compilation is not silently included in
-or hidden behind the instantiation measurement.
+## Actual 1.4.0 / engine differences from the design sketch
+
+- Conversation ids are branded types, so JSON ids are validated then cast at
+  the boundary. ReportInfo.task exists only on some union arms.
+- pi.live persists as `{}` when idle! Presence is not busy; use run/generation /
+  compaction state. View entries are readonly. Streaming emits live snapshots
+  only when their immutable value changes.
+- FollowMode's initial return type must widen its boolean literal. Latest-doc fork
+  semantics are `current` / `initial`, not `copy`.
+- AgentChange.thinkingLevel is an enum, not an arbitrary string; the wire type
+  remains the design's subset, cast to Durable's type at configure.
+- Dummy modify is a true no-op: unlike the sketch it never returns a callback's
+  proposed key. read/list/modify/delete cannot install real credentials.
+- WIT s64 arguments arrive as bigint, but Durable ids are JS numbers. component.ts
+  converts abort/configure/set-follow ids before validating their safe range.
+- StarlingMonkey 0.22's native AbortSignal.any returned an already-aborted signal
+  (reason `5e-324`) for fresh inputs. OpenAI's SDK composes signals before fetch,
+  causing an immediate connection error. abort-signals.ts replaces only `any`
+  with listener-based composition, preserving native signals/reasons/cancellation.
+  It does NOT strip fetch signals or alter the SDK; Node unit tests cover it and
+  the real Wasm submission exercises it end-to-end.
+- StarlingMonkey bodies have getReader but no async iterator: streams.ts adapts
+  each reader read directly. WIT result errors are lowered to strings.
+- The bundled TypeBox uses Unicode-property regexes absent from StarlingMonkey's
+  small ICU. esbuild.mjs uses acorn + regexpu-core to lower their exact Unicode
+  sets at build time (no ASCII approximation, dependency patch or eval shim).
+- Browser export conditions are required when bundling provider SDKs; neutral
+  selects Anthropic's Node-only modules. No Node shim ships in the component.
+- Wasmtime 36.0.19 uses explicit synchronous bindgen imports/exports flags, not
+  `async: false`. The component imports WASI @0.2.10 while Wasmtime uses @0.2.6;
+  semver-aware linking is exercised by tests (see PR4).
+
+ComponentizeJS/Wizer runs with `env: {}` and fetch-event disabled. Its pinned
+build-tool dependency chain has an existing npm-audit archive-extraction
+advisory: do not use it to process untrusted archives (PR4 caveat).
