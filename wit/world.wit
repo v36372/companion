@@ -1,0 +1,117 @@
+package companion:agent@0.1.0;
+
+interface types {
+record fs-error { code: string, message: string, path: option<string> }
+record exec-error { code: string, message: string }
+record file-info { name: string, path: string, kind: string, size: u64, mtime-ms: f64 }
+record line-scan {
+  newlines: u32, start: u64, end: u64,
+  first-line-end: u64, last-line-start: u64,
+  selected-bytes: u64, first-line-bytes: u64,
+}
+record sqlite-error { message: string }
+record text-line { text: string, terminated: bool }
+
+variant sqlite-value {
+  null,
+  real(f64),
+  integer(s64),
+  text(string),
+  blob(list<u8>),
+}
+
+record list-files-options {
+  hidden: option<bool>,
+  gitignore: option<bool>,
+  exclude: list<string>,
+  max-entries: option<u32>,
+  max-bytes: option<u32>,
+  timeout-ms: option<u32>,
+}
+
+}
+
+interface fs {
+  use types.{fs-error, exec-error, file-info as file-info-record, line-scan, text-line, list-files-options};
+  read-text-file: func(path: string) -> result<string, fs-error>;
+  read-binary-file: func(path: string) -> result<list<u8>, fs-error>;
+  write-file: func(path: string, content: list<u8>) -> result<_, fs-error>;
+  append-file: func(path: string, content: list<u8>) -> result<_, fs-error>;
+  truncate-file: func(path: string, size: u64) -> result<_, fs-error>;
+  flush-file: func(path: string) -> result<_, fs-error>;
+  rename-file: func(%from: string, to: string) -> result<_, fs-error>;
+  file-info: func(path: string) -> result<file-info-record, fs-error>;
+  list-dir: func(path: string) -> result<list<file-info-record>, fs-error>;
+  list-files: func(path: string, opts: list-files-options) -> result<string, fs-error>;
+  exists: func(path: string) -> result<bool, fs-error>;
+  create-dir: func(path: string, recursive: bool) -> result<_, fs-error>;
+  remove: func(path: string, recursive: bool, force: bool) -> result<_, fs-error>;
+  canonical-path: func(path: string) -> result<string, fs-error>;
+  absolute-path: func(cwd: string, path: string) -> result<string, fs-error>;
+  join-path: func(parts: list<string>) -> result<string, fs-error>;
+  create-temp-dir: func(prefix: option<string>) -> result<string, fs-error>;
+  create-temp-file: func(prefix: option<string>, suffix: option<string>) -> result<string, fs-error>;
+  open-binary: func(path: string, no-follow: bool) -> result<u32, fs-error>;
+  pread: func(handle: u32, offset: u64, length: u32) -> result<list<u8>, fs-error>;
+  scan-lines: func(handle: u32, start-line: u32, end-line: option<u32>) -> result<line-scan, fs-error>;
+  fstat: func(handle: u32) -> result<file-info-record, fs-error>;
+  close-handle: func(handle: u32);
+  /// Host LineScanner / StreamDecoder / startsWithBom — same as NodeExecutionEnv.
+  read-text-lines: func(path: string, max-lines: option<u32>) -> result<list<string>, fs-error>;
+  open-text-line-reader: func(path: string) -> result<u32, fs-error>;
+  read-line: func(handle: u32) -> result<option<text-line>, fs-error>;
+  watch-register: func(targets-json: string) -> result<u32, fs-error>;
+  watch-close: func(id: u32);
+  env-id: func() -> string;
+  env-cwd: func() -> string;
+  set-cwd: func(path: string) -> result<_, fs-error>;
+  fs-cleanup: func();
+  exec: func(command-json: string, options-json: string) -> result<string, exec-error>;
+}
+
+interface sqlite {
+  use types.{sqlite-error, sqlite-value};
+  exec: func(sql: string) -> result<_, sqlite-error>;
+  run: func(sql: string, params: list<sqlite-value>) -> result<_, sqlite-error>;
+  /// Row encoded as JSON object string; SQL NULL row → none. Not "SQL NULL vs missing".
+  get: func(sql: string, params: list<sqlite-value>) -> result<option<string>, sqlite-error>;
+  all: func(sql: string, params: list<sqlite-value>) -> result<string, sqlite-error>;
+  begin: func() -> result<_, sqlite-error>;
+  commit: func() -> result<_, sqlite-error>;
+  rollback: func() -> result<_, sqlite-error>;
+}
+
+interface host-events {
+  on-commit: func(bytes: string);  // CommitEvent
+  on-stream: func(bytes: string);  // StreamEvent
+  on-report: func(bytes: string);  // ReportEvent
+}
+
+interface pdf-cmd {
+  /// page is 1-based. Host converts to page_0 for gpui-pdf.
+  goto: func(page: u32, quote: option<string>, occurrence: u32) -> result<_, string>;
+  highlight: func(page: u32, quote: string, occurrence: u32, color: option<string>) -> result<u64, string>;
+  search: func(query: string, max: u32) -> result<string, string>;
+}
+
+world guest {
+  import fs;
+  import sqlite;
+  import host-events;
+  import pdf-cmd;
+
+  export open: func(config-json: string) -> result<_, string>;
+  export open-document: func(req-json: string) -> result<string, string>;
+  export close: func();
+  /// Awaits the whole generation. Returns SubmitRes JSON.
+  export submit: func(req-json: string) -> result<string, string>;
+  /// Crash recovery only: resume() then waitForIdle(). Not Esc.
+  export resume-wait: func() -> result<_, string>;
+  /// After submit returns or after trap+reinstantiate. conversation.abort().
+  export abort: func(conversation-id: s64) -> result<_, string>;
+  export set-follow: func(conversation-id: s64, enabled: bool) -> result<_, string>;
+  export configure: func(conversation-id: s64, agent-json: string) -> result<_, string>;
+  // PR4 ONLY: remove when submit uses the real harness.
+  export spike-sse: func(url: string) -> result<string, string>;
+  export spike-busy: func();
+}

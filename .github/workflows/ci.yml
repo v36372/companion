@@ -48,4 +48,38 @@ jobs:
             echo "gpui-pre is not in the workspace dependency graph; skipping."
           fi
 
-  # agent job (Node 22, npm run componentize) is added in PR4
+  # Independent of rust/PDF: never add this job to rust.needs.
+  agent:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - run: npm ci
+        working-directory: agent
+      - run: npm run build
+        working-directory: agent
+      - run: npm run componentize
+        working-directory: agent
+      - name: Record WASI imports
+        run: npx jco wit ../crates/companion-agent-host/src/agent-core.wasm > dist/agent-core.wit
+        working-directory: agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-core
+          path: |
+            crates/companion-agent-host/src/agent-core.wasm
+            agent/dist/agent-core.wit
+      - name: Check pi-ai against local OpenAI-compatible mock (no credentials)
+        run: npm run test:mock
+        working-directory: agent
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: agent
+      - name: Run on-stack streaming and abort spike
+        run: scripts/spike-sse.sh --built
