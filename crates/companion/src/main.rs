@@ -1,4 +1,8 @@
+#[cfg_attr(not(feature = "agent"), allow(dead_code))]
+mod agent_bridge;
 mod app;
+mod ask_bar;
+mod chat;
 mod window;
 
 fn main() -> anyhow::Result<()> {

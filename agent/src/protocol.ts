@@ -36,8 +36,11 @@ export interface SubmitRes {
 export interface CommitEvent {
   conversationId: number;
   reason: "user_entry" | "assistant_entry" | "tool_result" | "other";
-  /** Compact: entry ids + pi.live presence, not the full ConversationView. */
+  /** Structural transcript only; live snapshots stay on the stream channel. */
   headEntryId?: number;
+  /** Transcript snapshot on structural changes only (never per token). */
+  entries?: readonly unknown[];
+  followEnabled?: boolean;
   busy: boolean;
 }
 

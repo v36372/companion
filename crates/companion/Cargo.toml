@@ -9,7 +9,14 @@ publish.workspace = true
 name = "learning-companion"
 path = "src/main.rs"
 
+[features]
+agent = ["companion-agent-host/agent"]
+test-mock-provider = ["agent", "companion-agent-host/test-mock-provider"]
+
 [dependencies]
+companion-agent-host = { path = "../companion-agent-host" }
+serde_json.workspace = true
+async-channel = "2"
 companion-env = { path = "../companion-env" }
 crossbeam-channel.workspace = true
 companion-pdf = { path = "../companion-pdf" }

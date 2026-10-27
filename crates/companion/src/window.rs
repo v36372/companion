@@ -9,14 +9,18 @@ use std::{
     time::Duration,
 };
 
+use crate::{
+    agent_bridge::{Attachment, Bridge},
+    ask_bar::{AskBar, AskEvent},
+};
 use companion_pdf::{
     CompanionPdf,
     page_index::{page_0_to_1, page_1_to_0},
     snapshot::{DocMeta, DocSnapshot, LiveSelection},
-    text_layer::{ask_quote, live_selection},
+    text_layer::live_selection,
 };
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
-use gpui::{Context, FocusHandle, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Entity, FocusHandle, Window, div, prelude::*, px, rgb};
 
 pub struct CompanionWindow {
     pdf: Option<CompanionPdf>,
@@ -30,7 +34,9 @@ pub struct CompanionWindow {
     navigation: HashMap<String, (ReadingProgress, Arc<AtomicU64>)>,
     error: Option<String>,
     selection: Option<(LiveSelection, String)>,
-    agent_quote: Option<String>,
+    bridge: Bridge,
+    composer: Entity<AskBar>,
+    chat_scroll: gpui::ScrollHandle,
     open_generation: u64,
     pub(crate) doc_env: Option<Arc<companion_env::VirtualDocFs>>,
     pub(crate) pdf_commands: (
@@ -70,6 +76,48 @@ impl CompanionWindow {
                 Some(format!("Cannot open catalog: {error:#}")),
             ),
         };
+        let composer = cx.new(AskBar::new);
+        cx.subscribe(&composer, |this, _, event: &AskEvent, cx| {
+            match event {
+                AskEvent::Submit(text) => {
+                    if this.bridge.submit(text.clone(), None) {
+                        this.composer.update(cx, |bar, cx| {
+                            bar.text.clear();
+                            cx.notify();
+                        });
+                    }
+                }
+                AskEvent::Abort => this.bridge.abort(),
+            }
+            cx.notify();
+        })
+        .detach();
+        #[cfg(feature = "agent")]
+        let bridge = if let Some(hub) = catalog.clone() {
+            let (bridge, events) = Bridge::start(hub);
+            cx.spawn(async move |this, cx| {
+                while let Ok(event) = events.recv().await {
+                    if this
+                        .update(cx, |this, cx| {
+                            this.bridge.event(event);
+                            if this.bridge.running {
+                                this.chat_scroll.scroll_to_bottom();
+                            }
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+            bridge
+        } else {
+            Bridge::off()
+        };
+        #[cfg(not(feature = "agent"))]
+        let bridge = Bridge::off();
         let mut view = Self {
             pdf: None,
             focus,
@@ -82,7 +130,9 @@ impl CompanionWindow {
             navigation: HashMap::new(),
             error,
             selection: None,
-            agent_quote: None,
+            bridge,
+            composer,
+            chat_scroll: gpui::ScrollHandle::new(),
             open_generation: 0,
             doc_env: None,
             pdf_commands: crossbeam_channel::unbounded(),
@@ -109,9 +159,14 @@ impl CompanionWindow {
         view
     }
 
+    pub fn agent_shutdown(&self) -> Option<async_channel::Receiver<()>> {
+        self.bridge.shutdown()
+    }
+
     /// Flush pending explicit navigation before quitting; background timers may
     /// not run once the application event loop has stopped.
     pub fn close_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.bridge.close();
         if let Some(catalog) = &self.catalog {
             for (document_id, (progress, generation)) in &self.navigation {
                 // Check/invalidate timers under the same writer lock used below.
@@ -141,6 +196,9 @@ impl CompanionWindow {
                         .is_some_and(|doc| doc.id == document_id)
                     {
                         self.goto_explicit(page_0, cx);
+                        self.bridge
+                            .notices
+                            .push(format!("went to p. {}", page_0_to_1(page_0)));
                     }
                 }
                 companion_env::PdfCommand::Highlight { document_id, .. } => {
@@ -150,6 +208,7 @@ impl CompanionWindow {
                         .is_some_and(|doc| doc.id == document_id)
                     {
                         self.restore_highlights(cx);
+                        self.bridge.notices.push("highlighted a passage".into());
                         cx.notify();
                     }
                 }
@@ -217,6 +276,9 @@ impl CompanionWindow {
             cx.notify();
             return;
         }
+        // Invalidate chat immediately; the bridge waits for old submit + abort
+        // before publishing any replacement SetDocument/OpenDocument.
+        self.bridge.begin_switch();
         // Only release the old viewer once the new managed document is available.
         self.release_pdf(window, cx);
         let pdf = CompanionPdf::open(PathBuf::from(&document.stored_path), cx);
@@ -240,7 +302,6 @@ impl CompanionWindow {
         self.pdf = Some(pdf);
         self.document = Some(document.clone());
         self.selection = None;
-        self.agent_quote = None;
         self.open_generation += 1;
         let generation = self.open_generation;
         let copied = document.stored_path.clone();
@@ -322,6 +383,15 @@ impl CompanionWindow {
                         {
                             // Attaching extraction must not scroll or discard restored progress.
                             this.persist_navigation(progress, cx);
+                        }
+                        if let (Some(fs), Some(doc)) = (&this.doc_env, &this.document) {
+                            this.bridge.switch_document(Attachment {
+                                fs: fs.clone(),
+                                pdf_tx: this.pdf_commands.0.clone(),
+                                document_id: doc.id.clone(),
+                                title: doc.title.clone(),
+                                page_count: doc.page_count.unwrap_or(0),
+                            });
                         }
                         this.refresh_recent();
                     }
@@ -458,7 +528,9 @@ impl CompanionWindow {
 
     fn ask_selection(&mut self, cx: &mut Context<Self>) {
         if let Some((selection, _)) = &self.selection {
-            self.agent_quote = Some(ask_quote(selection));
+            self.bridge.submit("Explain this passage.".into(), Some(serde_json::json!({
+                "page": selection.page, "quote": selection.quote, "occurrence": selection.occurrence
+            })));
             cx.notify();
         }
     }
@@ -600,6 +672,7 @@ impl Render for CompanionWindow {
                 match event.keystroke.key.as_str() {
                     "pagedown" => { this.navigate(true, cx); cx.stop_propagation(); }
                     "pageup" => { this.navigate(false, cx); cx.stop_propagation(); }
+                    "escape" => { this.bridge.abort(); cx.notify(); cx.stop_propagation(); }
                     _ => {}
                 }
             }))
@@ -671,17 +744,11 @@ impl Render for CompanionWindow {
                             })),
                     )
                     .child(center)
-                    .child(
-                        div()
-                            .w(px(360.))
-                            .flex_shrink_0()
-                            .h_full()
-                            .p_4()
-                            .border_l_1()
-                            .border_color(rgb(0x3f3f46))
-                            .child("Agent — coming soon")
-                            .child(div().py_3().text_sm().child(self.agent_quote.clone().unwrap_or_else(|| "Select text, then Ask. Asking does not save a highlight.".into()))),
-                    ),
+                    .child(div().flex().flex_col().h_full()
+                        .child(div().id("follow-mode").px_4().py_2().cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); }))
+                            .child(if self.bridge.follow { "Follow: on" } else { "Follow: off" }))
+                        .child(div().flex_1().min_h_0().child(crate::chat::pane(&self.bridge, self.composer.clone(), &self.chat_scroll)))),
             )
     }
 }

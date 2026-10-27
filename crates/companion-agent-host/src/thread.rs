@@ -23,6 +23,12 @@ pub enum HostToGuest {
         req_json: String,
         conversation_id: i64,
     },
+    /// UI reset cancellation before enqueue, so an immediate Esc cannot be lost
+    /// by resetting the flag later on the agent thread.
+    SubmitPrepared {
+        req_json: String,
+        conversation_id: i64,
+    },
     Abort {
         conversation_id: i64,
     },
@@ -86,6 +92,7 @@ pub fn spawn_with_secrets(
             let (mut store, mut guest) = wasm::instantiate(&runtime, state())?;
             let mut last_open = None;
             while let Ok(command) = commands.recv() {
+                let prepared = matches!(command, Command::SubmitPrepared { .. });
                 let mut conversation_id = None;
                 let mut submit = false;
                 let result = match command {
@@ -110,10 +117,16 @@ pub fn spawn_with_secrets(
                     Command::Submit {
                         req_json,
                         conversation_id: id,
+                    }
+                    | Command::SubmitPrepared {
+                        req_json,
+                        conversation_id: id,
                     } => {
                         conversation_id = Some(id);
                         submit = true;
-                        abort.reset();
+                        if !prepared {
+                            abort.reset();
+                        }
                         guest.call_submit(&mut store, &req_json)
                     }
                     Command::Abort {

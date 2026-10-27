@@ -75,13 +75,28 @@ impl Future for Cancel {
 
 #[derive(Clone, Default)]
 pub struct Policy {
-    // No env-var switch or production constructor can enable loopback.
-    #[cfg(test)]
+    // Only unit tests / the explicit smoke-test feature can enable loopback.
+    #[cfg(any(test, feature = "test-mock-provider"))]
     pub(crate) loopback_port: Option<u16>,
 }
 impl Policy {
+    #[cfg(feature = "test-mock-provider")]
+    pub fn mock_provider(base: &str) -> anyhow::Result<Self> {
+        let uri: hyper::Uri = base.parse()?;
+        anyhow::ensure!(
+            uri.scheme_str() == Some("http")
+                && uri.host() == Some("127.0.0.1")
+                && uri.port_u16().is_some()
+                && uri.path() == "/",
+            "mock base must be http://127.0.0.1:PORT"
+        );
+        Ok(Self {
+            loopback_port: uri.port_u16(),
+        })
+    }
+
     fn check(&self, uri: &hyper::Uri, tls: bool) -> Result<(), ErrorCode> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-mock-provider"))]
         if !tls
             && uri.host() == Some("127.0.0.1")
             && uri.port_u16() == self.loopback_port
@@ -111,7 +126,7 @@ fn inject_headers(
         "api.anthropic.com" => "anthropic",
         "api.search.brave.com" => "brave",
         "generativelanguage.googleapis.com" => "google",
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-mock-provider"))]
         "127.0.0.1" => "openrouter",
         _ => anyhow::bail!("unknown provider"),
     };
@@ -216,7 +231,8 @@ async fn pinned_request(
         .await
         .map_err(|_| ErrorCode::ConnectionRefused)?
         .collect();
-    let test_loopback = cfg!(test) && !config.use_tls && host == "127.0.0.1";
+    let test_loopback =
+        cfg!(any(test, feature = "test-mock-provider")) && !config.use_tls && host == "127.0.0.1";
     if addresses.is_empty() || (!test_loopback && addresses.iter().any(|a| !public_ip(a.ip()))) {
         return Err(ErrorCode::HttpRequestDenied);
     }
@@ -298,7 +314,7 @@ impl WasiHttpView for AgentHostState {
             return Ok(HostFutureIncomingResponse::ready(Ok(Err(e))));
         }
         let secrets = self.secrets.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-mock-provider"))]
         let loopback_port = self.policy.loopback_port;
         config.connect_timeout = config.connect_timeout.min(TIMEOUT);
         config.first_byte_timeout = config.first_byte_timeout.min(TIMEOUT);
@@ -317,9 +333,9 @@ impl WasiHttpView for AgentHostState {
                 .map_err(|_| ErrorCode::HttpRequestDenied)?
                 .map_err(|_| ErrorCode::HttpRequestDenied)?;
                 // Only test builds can reroute the catalog's real baseUrl.
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-mock-provider"))]
                 let mut request = request;
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-mock-provider"))]
                 if let Some(port) = loopback_port
                     && request.uri().host() == Some("openrouter.ai")
                 {
