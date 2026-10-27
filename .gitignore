@@ -1,5 +1,9 @@
 /target
 /.build-logs/
+/.pr7/
+/logs/
+/agent/*.log
+/agent/*.exit
 crates/companion-agent-host/src/agent-core.wasm
 agent/node_modules
 agent/dist

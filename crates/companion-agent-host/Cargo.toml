@@ -12,6 +12,7 @@ agent = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wasmtime-wasi-http", "dep:byt
 [dependencies]
 anyhow.workspace = true
 companion-store = { path = "../companion-store" }
+companion-env = { path = "../companion-env" }
 rusqlite.workspace = true
 crossbeam-channel.workspace = true
 serde_json.workspace = true
@@ -31,4 +32,5 @@ webpki-roots = { version = "0.26", optional = true }
 tokio = { version = "1", features = ["time", "sync", "macros", "net"], optional = true }
 
 [dev-dependencies]
+companion-pdf = { path = "../companion-pdf" }
 tempfile = "3"

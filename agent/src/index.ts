@@ -13,6 +13,11 @@ import {
   type AgentChange as DurableAgentChange,
 } from "@earendil-works/pi-durable";
 
+import { HostExecutionEnv } from './env.ts';
+import { createPdfExtension } from './extensions/pdf.ts';
+import { createSnapshotReadTool } from './extensions/read.ts';
+import * as fs from 'companion:agent/fs@0.1.0';
+import * as pdfCmd from 'companion:agent/pdf-cmd@0.1.0';
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
 import * as sqlite from 'companion:agent/sqlite@0.1.0';
 import { HostSqliteDatabase } from './storage.ts';
@@ -57,7 +62,8 @@ export async function open(configJson: string): Promise<void> {
   // (HarnessSettings.stream has none; Models.stream() is called inside the Harness).
 
   const registry = createRegistry();
-  // Tools / host ExecutionEnv arrive with PR7. No shell or ambient FS.
+  registry.install(createPdfExtension(pdfCmd));
+  registry.install({ name: 'read', tools: [createSnapshotReadTool()] });
   database = new HostSqliteDatabase(sqlite);
   const storage = await SqliteStorage.open(database, { prefix: 'pi_' });
   hostEvents.onReport(JSON.stringify({ type: 'models', message: JSON.stringify(models.getModels()) }));
@@ -67,6 +73,7 @@ export async function open(configJson: string): Promise<void> {
     {
       models,
       registry,
+      env: (target, _ctx) => new HostExecutionEnv(fs, target.cwd ?? '/doc'),
       conversationCreated: async (tx, conversation) => {
         const doc = await tx.doc(OpenDoc, conversation.id);
         await tx.doc(FollowMode, conversation.id);

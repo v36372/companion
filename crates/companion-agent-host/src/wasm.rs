@@ -40,6 +40,8 @@ pub enum Event {
 }
 
 pub struct AgentHostState {
+    pub fs: std::sync::Arc<companion_env::VirtualDocFs>,
+    pub pdf_tx: Sender<companion_env::PdfCommand>,
     pub sqlite: std::sync::Arc<companion_store::SqliteHub>,
     sqlite_owner: u64,
     pub secrets: std::sync::Arc<dyn crate::secrets::SecretStore>,
@@ -78,6 +80,11 @@ impl AgentHostState {
         wasi.inherit_stderr();
         static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            fs: std::sync::Arc::new(
+                companion_env::VirtualDocFs::new(None, sqlite.clone())
+                    .expect("empty document environment"),
+            ),
+            pdf_tx: crossbeam_channel::unbounded().0,
             sqlite,
             sqlite_owner: NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             secrets,
@@ -170,7 +177,7 @@ impl companion::agent::host_events::Host for AgentHostState {
     }
 }
 
+mod env;
 mod sqlite;
 #[cfg(test)]
 mod sqlite_tests;
-mod stubs;
