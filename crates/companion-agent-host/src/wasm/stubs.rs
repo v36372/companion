@@ -164,7 +164,7 @@ impl super::companion::agent::fs::Host for AgentHostState {
             path: None,
         })
     }
-    fn close_handle(&mut self, _handle: u32) -> () {}
+    fn close_handle(&mut self, _handle: u32) {}
     fn read_text_lines(
         &mut self,
         _path: String,
@@ -197,7 +197,7 @@ impl super::companion::agent::fs::Host for AgentHostState {
             path: None,
         })
     }
-    fn watch_close(&mut self, _id: u32) -> () {}
+    fn watch_close(&mut self, _id: u32) {}
     fn env_id(&mut self) -> String {
         "PR4 stub".into()
     }
@@ -211,7 +211,7 @@ impl super::companion::agent::fs::Host for AgentHostState {
             path: None,
         })
     }
-    fn fs_cleanup(&mut self) -> () {}
+    fn fs_cleanup(&mut self) {}
     fn exec(&mut self, _command_json: String, _options_json: String) -> Result<String, ExecError> {
         Err(ExecError {
             code: "shell_unavailable".into(),

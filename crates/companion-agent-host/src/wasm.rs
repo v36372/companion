@@ -18,12 +18,29 @@ wasmtime::component::bindgen!({
 
 #[derive(Debug)]
 pub enum Event {
-    Chunk { at: Instant, json: String },
-    Ready { cold_start_ms: f64, compile_ms: f64 },
+    Chunk {
+        at: Instant,
+        json: String,
+    },
+    Ready {
+        cold_start_ms: f64,
+        compile_ms: f64,
+    },
     Done(Result<String, String>),
+    Commit(String),
+    Report(String),
+    OpenDocumentDone(String),
+    SubmitDone(String),
+    Aborted(i64),
+    Error(String),
+    Trapped {
+        message: String,
+        abort_requested: bool,
+    },
 }
 
 pub struct AgentHostState {
+    pub secrets: std::sync::Arc<dyn crate::secrets::SecretStore>,
     pub abort: Abort,
     pub policy: Policy,
     pub events: Sender<Event>,
@@ -33,11 +50,25 @@ pub struct AgentHostState {
 }
 impl AgentHostState {
     pub fn new(abort: Abort, policy: Policy, events: Sender<Event>) -> Self {
+        Self::with_secrets(
+            abort,
+            policy,
+            events,
+            std::sync::Arc::new(crate::secrets::KeychainStore),
+        )
+    }
+    pub fn with_secrets(
+        abort: Abort,
+        policy: Policy,
+        events: Sender<Event>,
+        secrets: std::sync::Arc<dyn crate::secrets::SecretStore>,
+    ) -> Self {
         let mut wasi = WasiCtxBuilder::new();
         // Diagnostics only, never inherited environment or filesystem access.
         #[cfg(test)]
         wasi.inherit_stderr();
         Self {
+            secrets,
             abort,
             policy,
             events,
@@ -74,6 +105,7 @@ pub struct Runtime {
 }
 impl Runtime {
     pub fn load() -> anyhow::Result<Self> {
+        anyhow::ensure!(crate::agent_enabled()?, "agent is disabled");
         let engine = engine()?;
         let start = Instant::now();
         let component = Component::from_binary(&engine, include_bytes!("agent-core.wasm"))?;
@@ -107,8 +139,12 @@ pub fn instantiate(
 
 impl companion::agent::types::Host for AgentHostState {}
 impl companion::agent::host_events::Host for AgentHostState {
-    fn on_commit(&mut self, _: String) {}
-    fn on_report(&mut self, _: String) {}
+    fn on_commit(&mut self, json: String) {
+        let _ = self.events.send(Event::Commit(json));
+    }
+    fn on_report(&mut self, json: String) {
+        let _ = self.events.send(Event::Report(json));
+    }
     fn on_stream(&mut self, json: String) {
         let _ = self.events.send(Event::Chunk {
             at: Instant::now(),
