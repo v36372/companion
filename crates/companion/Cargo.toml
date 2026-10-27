@@ -10,6 +10,8 @@ name = "learning-companion"
 path = "src/main.rs"
 
 [dependencies]
+companion-env = { path = "../companion-env" }
+crossbeam-channel.workspace = true
 companion-pdf = { path = "../companion-pdf" }
 companion-store = { path = "../companion-store" }
 directories.workspace = true

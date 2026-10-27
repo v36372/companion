@@ -1,4 +1,5 @@
 mod durable;
+mod pdf;
 
 use super::*;
 use crate::{secrets::MemorySecretStore, wasm::Event};

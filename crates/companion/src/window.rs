@@ -32,6 +32,11 @@ pub struct CompanionWindow {
     selection: Option<(LiveSelection, String)>,
     agent_quote: Option<String>,
     open_generation: u64,
+    pub(crate) doc_env: Option<Arc<companion_env::VirtualDocFs>>,
+    pub(crate) pdf_commands: (
+        crossbeam_channel::Sender<companion_env::PdfCommand>,
+        crossbeam_channel::Receiver<companion_env::PdfCommand>,
+    ),
 }
 
 fn open_catalog() -> anyhow::Result<(PathBuf, Arc<SqliteHub>)> {
@@ -79,7 +84,24 @@ impl CompanionWindow {
             selection: None,
             agent_quote: None,
             open_generation: 0,
+            doc_env: None,
+            pdf_commands: crossbeam_channel::unbounded(),
         };
+        // Command imports never block the UI thread. Drain here, not while holding SQLite.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(30))
+                    .await;
+                if this
+                    .update(cx, |this, cx| this.drain_pdf_commands(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         view.refresh_recent();
         if let Some(path) = path {
             view.open_pdf(path, window, cx);
@@ -105,7 +127,38 @@ impl CompanionWindow {
         self.release_pdf(window, cx);
     }
 
+    fn drain_pdf_commands(&mut self, cx: &mut Context<Self>) {
+        while let Ok(command) = self.pdf_commands.1.try_recv() {
+            match command {
+                companion_env::PdfCommand::Goto {
+                    document_id,
+                    page_0,
+                    ..
+                } => {
+                    if self
+                        .document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == document_id)
+                    {
+                        self.goto_explicit(page_0, cx);
+                    }
+                }
+                companion_env::PdfCommand::Highlight { document_id, .. } => {
+                    if self
+                        .document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == document_id)
+                    {
+                        self.restore_highlights(cx);
+                        cx.notify();
+                    }
+                }
+            }
+        }
+    }
+
     fn release_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.doc_env.take();
         if let Some(pdf) = self.pdf.take() {
             pdf.release(window, cx);
         }
@@ -215,6 +268,18 @@ impl CompanionWindow {
                 }
                 match result {
                     Ok(snapshot) => {
+                        match companion_env::VirtualDocFs::new(
+                            Some(snapshot.clone()),
+                            this.catalog.as_ref().unwrap().clone(),
+                        ) {
+                            Ok(fs) => this.doc_env = Some(Arc::new(fs)),
+                            Err(error) => {
+                                this.error = Some(format!(
+                                    "Cannot open document environment: {}",
+                                    error.message
+                                ))
+                            }
+                        }
                         if let Some(document) = &mut this.document {
                             document.page_count = Some(snapshot.meta.page_count);
                         }

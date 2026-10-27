@@ -1,0 +1,19 @@
+[package]
+name = "companion-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+companion-pdf = { path = "../companion-pdf" }
+companion-store = { path = "../companion-store" }
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
+crossbeam-channel.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

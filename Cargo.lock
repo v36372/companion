@@ -1093,8 +1093,10 @@ name = "companion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "companion-env",
  "companion-pdf",
  "companion-store",
+ "crossbeam-channel",
  "directories",
  "gpui-pdf",
  "gpui-pre",
@@ -1111,6 +1113,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "companion-env",
+ "companion-pdf",
  "companion-store",
  "crossbeam-channel",
  "http-body",
@@ -1128,6 +1132,21 @@ dependencies = [
  "wasmtime-wasi",
  "wasmtime-wasi-http",
  "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "companion-env"
+version = "0.1.0"
+dependencies = [
+ "companion-pdf",
+ "companion-store",
+ "crossbeam-channel",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

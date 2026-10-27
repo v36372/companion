@@ -8,6 +8,11 @@ use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
 
 pub enum HostToGuest {
+    /// Queue only after Esc/submit settles. Never swap an on-stack generation's tree (D13).
+    SetDocument {
+        fs: Arc<companion_env::VirtualDocFs>,
+        pdf_tx: Sender<companion_env::PdfCommand>,
+    },
     Open {
         config_json: String,
     },
@@ -84,6 +89,11 @@ pub fn spawn_with_secrets(
                 let mut conversation_id = None;
                 let mut submit = false;
                 let result = match command {
+                    Command::SetDocument { fs, pdf_tx } => {
+                        store.data_mut().fs = fs;
+                        store.data_mut().pdf_tx = pdf_tx;
+                        continue;
+                    }
                     Command::Open { config_json } => {
                         last_open = Some(config_json.clone());
                         guest
@@ -122,7 +132,16 @@ pub fn spawn_with_secrets(
                         enabled,
                     } => guest
                         .call_set_follow(&mut store, conversation_id, enabled)
-                        .map(|r| r.map(|_| String::new())),
+                        .map(|r| {
+                            r.map(|_| {
+                                store
+                                    .data()
+                                    .fs
+                                    .follow
+                                    .store(enabled, std::sync::atomic::Ordering::Relaxed);
+                                String::new()
+                            })
+                        }),
                     Command::Configure {
                         conversation_id,
                         agent_json,
@@ -165,12 +184,17 @@ pub fn spawn_with_secrets(
                         // Drop the trapped Store/resource table before any export.
                         // Guest has only non-owning typed handles (no Drop); replace
                         // them below and never invoke a handle from the old Store.
+                        let fs = store.data().fs.clone();
+                        let pdf_tx = store.data().pdf_tx.clone();
                         drop(store);
                         let Some(config) = &last_open else {
                             let _ = events.send(Event::Done(Err(message)));
                             break;
                         };
-                        (store, guest) = wasm::instantiate(&runtime, state())?;
+                        let mut next = state();
+                        next.fs = fs;
+                        next.pdf_tx = pdf_tx;
+                        (store, guest) = wasm::instantiate(&runtime, next)?;
                         guest
                             .call_open(&mut store, config)?
                             .map_err(anyhow::Error::msg)?;

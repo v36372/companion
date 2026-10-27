@@ -5,7 +5,9 @@ pi-ai 1.4.0 providers. OpenRouter is the default. `COMPANION_AGENT=wasm` is
 implicit; `off` prevents component loading (there is no sidecar runtime).
 The caller supplies the app's `Arc<SqliteHub>` to the agent thread: production
 uses the same `companion.sqlite`, not a second connection or `agent.sqlite`.
-Tools and the host document ExecutionEnv are PR7+: no ambient FS/shell.
+The host document ExecutionEnv, stock read tool, and seven PDF tools are installed:
+no ambient FS/shell. See [virtual-doc-fs.md](../docs/virtual-doc-fs.md) for the
+single-snapshot lifecycle, replay policy, and command channel integration.
 PR4's streaming/abort evidence remains in [SPIKE-RESULTS.md](SPIKE-RESULTS.md).
 
 ## Build and test (no real credentials)
