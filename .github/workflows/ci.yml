@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_BUILD_JOBS: 1
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux GPUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            libvulkan-dev libasound2-dev libssl-dev libzstd-dev libsqlite3-dev
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all -- --check
+      - name: Build workspace
+        if: hashFiles('Cargo.toml') != ''
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo build --workspace --locked
+          else
+            cargo build --workspace
+          fi
+      - name: Test workspace
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test --workspace
+      - name: Check GPUI snapshot is unambiguous
+        if: hashFiles('Cargo.toml') != ''
+        run: |
+          dependencies="$(cargo tree --workspace --prefix none --format '{p}')"
+          if grep -q '^gpui-pre v' <<< "$dependencies"; then
+            # An unqualified package name fails when multiple versions are present.
+            cargo tree -i gpui-pre --depth 0
+          else
+            echo "gpui-pre is not in the workspace dependency graph; skipping."
+          fi
+
+  # agent job (Node 22, npm run componentize) is added in PR4

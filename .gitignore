@@ -1,0 +1,6 @@
+/target
+crates/companion-agent-host/src/agent-core.wasm
+agent/node_modules
+agent/dist
+*.sqlite
+.DS_Store
