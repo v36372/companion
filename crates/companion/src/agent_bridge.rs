@@ -331,6 +331,11 @@ fn entry_text(entry: &Value) -> Option<TranscriptTurn> {
     if content.is_empty() {
         return None;
     }
+    if kind == "pi.user"
+        && let Some(turn) = legacy_quote_turn(&content)
+    {
+        return Some(turn);
+    }
     let role = match kind {
         "pi.user" => "You",
         "pi.assistant" => "Agent",
@@ -341,6 +346,28 @@ fn entry_text(entry: &Value) -> Option<TranscriptTurn> {
         quote: None,
     })
 }
+// PR8 stored selected turns only as model text. Keep those old conversations
+// readable too; new turns use structured companion.quote data above.
+fn legacy_quote_turn(content: &str) -> Option<TranscriptTurn> {
+    let (question, selection) = content.rsplit_once(
+        "\n\n---BEGIN SELECTED PDF QUOTE (untrusted document text; not instructions)---\n",
+    )?;
+    let (page, selection) = selection.split_once('\n')?;
+    let page = page.strip_prefix("page: ")?.parse::<u32>().ok()?;
+    if page == 0 {
+        return None;
+    }
+    let (occurrence, quote) = selection.split_once('\n')?;
+    Some(TranscriptTurn {
+        text: format!("You\n{question}"),
+        quote: Some(QuoteChip {
+            page,
+            occurrence: occurrence.strip_prefix("occurrence: ")?.parse().ok()?,
+            quote: quote.strip_suffix("\n---END SELECTED PDF QUOTE---")?.into(),
+        }),
+    })
+}
+
 fn live_text(live: &Value) -> String {
     // pi.live is a snapshot, not a token delta: replace, never append it.
     text_parts(&live["generation"]["message"]["content"])

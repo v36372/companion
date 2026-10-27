@@ -35,7 +35,9 @@ question, not the model's injection delimiters. Clicking the chip takes the
 tracked explicit-navigation path back to that page. New selected turns store
 page, quote, occurrence and question as a `companion.quote` entry's data,
 separately from its delimited model message, so reopening preserves the chip.
-Delimiters are best-effort guidance, not a prompt-injection sandbox.
+PR8's older delimiter-only selected turns also render as chips on read, without
+rewriting their stored model messages. Delimiters are best-effort guidance, not
+a prompt-injection sandbox.
 
 The guest awaits `viewState()` and subscribes before submit. Structural commits
 carry transcript snapshots; on-stream carries replaceable pi.live snapshots.
