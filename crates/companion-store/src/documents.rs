@@ -87,6 +87,16 @@ impl SqliteHub {
         }
     }
 
+    pub fn set_page_count(&self, document_id: &str, page_count: u32) -> anyhow::Result<()> {
+        self.write(|connection| {
+            connection.execute(
+                "UPDATE documents SET page_count=?2 WHERE id=?1",
+                params![document_id, page_count],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn touch_last_opened(&self, document_id: &str) -> anyhow::Result<()> {
         self.write(|connection| {
             connection.execute("UPDATE documents SET last_opened_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1", [document_id])?;

@@ -1,5 +1,8 @@
-//! GPUI PDF viewer integration. Snapshot/text-layer ownership arrives in PR3.
+//! GPUI PDF viewer integration and independently owned text snapshot.
 
+pub mod page_index;
+pub mod snapshot;
+pub mod text_layer;
 mod viewer;
 
 pub use viewer::CompanionPdf;

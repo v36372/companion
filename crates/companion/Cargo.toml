@@ -14,8 +14,10 @@ companion-pdf = { path = "../companion-pdf" }
 companion-store = { path = "../companion-store" }
 directories.workspace = true
 gpui.workspace = true
+gpui-pdf.workspace = true
 gpui_platform.workspace = true
 rfd.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+uuid.workspace = true

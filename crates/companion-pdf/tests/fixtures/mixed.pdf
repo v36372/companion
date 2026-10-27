@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 50  >>
+stream
+BT /F1 24 Tf 60 700 Td (Companion text page) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Scan 8 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 35  >>
+stream
+q 400 0 0 500 100 150 cm /Scan Do Q
+endstream
+endobj
+8 0 obj
+<< /Length 12 /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 >>
+stream
+“‹Ê†¥»†¥»“‹Ê
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000317 00000 n 
+0000000418 00000 n 
+0000000549 00000 n 
+0000000635 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+790
+%%EOF
