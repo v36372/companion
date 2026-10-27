@@ -29,6 +29,30 @@ fn setup() -> (tempfile::TempDir, Arc<SqliteHub>, DocSnapshot) {
     (dir, hub, doc)
 }
 #[test]
+fn viewport_and_follow_files_publish_host_state() {
+    let (_dir, hub, doc) = setup();
+    let doc = Arc::new(doc);
+    let fs = VirtualDocFs::new(Some(doc.clone()), hub).unwrap();
+    doc.record_navigation(0, 0.0);
+    let viewport: serde_json::Value =
+        serde_json::from_str(&fs.read_text_file("/doc/viewport.json").unwrap()).unwrap();
+    assert_eq!(viewport["page"], 1);
+    assert_eq!(viewport["page_count"], 2);
+    assert_eq!(viewport["source"], "explicit_nav");
+    assert!(viewport["excerpt"].as_str().unwrap().contains("Companion"));
+    doc.record_navigation(1, 0.0);
+    let viewport: serde_json::Value =
+        serde_json::from_str(&fs.read_text_file("/doc/viewport.json").unwrap()).unwrap();
+    assert_eq!(viewport["page"], 2);
+    assert_eq!(viewport["source"], "explicit_nav");
+    assert_eq!(viewport["excerpt"], ""); // scanned page, not invented text
+    fs.follow.store(false, std::sync::atomic::Ordering::Relaxed);
+    let follow: serde_json::Value =
+        serde_json::from_str(&fs.read_text_file("/doc/follow.json").unwrap()).unwrap();
+    assert_eq!(follow, serde_json::json!({"enabled":false}));
+}
+
+#[test]
 fn paths_never_escape_to_host() {
     assert_eq!(
         absolute_path("/doc/pages", ".././meta.json").unwrap(),

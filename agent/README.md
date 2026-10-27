@@ -124,7 +124,14 @@ preopens. No ambient guest auth context is consulted.
   compaction state. View entries are readonly. Streaming emits live snapshots
   only when their immutable value changes.
 - FollowMode's initial return type must widen its boolean literal. Latest-doc fork
-  semantics are `current` / `initial`, not `copy`.
+  semantics are `current` / `initial`, not `copy`. The 1.4.0 structural view mounts
+  built-in docs only: attachment reads FollowMode through `harness.snapshot`,
+  and set-follow publishes its committed value explicitly. The host uses those
+  events to restore `/doc/follow.json`, including after Store/filesystem reopen.
+- Selected input uses the supported `entry: { kind, data }` submission option.
+  `companion.quote` entry data holds display locators/question; its model message
+  retains the untrusted quote delimiters. Structural snapshots carry both, and
+  the reader renders only the display parts as a tappable page chip.
 - AgentChange.thinkingLevel is an enum, not an arbitrary string; the wire type
   remains the design's subset, cast to Durable's type at configure.
 - Dummy modify is a true no-op: unlike the sketch it never returns a callback's
