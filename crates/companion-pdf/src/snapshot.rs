@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use gpui_pdf::{Document, extract_page_text, outline};
+use gpui_pdf::{Document, extract_page_text};
 use serde::Serialize;
 
 use crate::page_index::page_0_to_1;
@@ -126,7 +126,7 @@ impl DocSnapshot {
                 });
             }
         });
-        let outline = outline(&hayro);
+        let outline = crate::destinations::resolved_outline(&hayro);
         let outline_md = outline
             .iter()
             .map(|item| {

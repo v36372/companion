@@ -821,11 +821,15 @@ impl Render for CompanionWindow {
                             .overflow_y_scroll()
                             .child("Outline")
                             .children(outline.into_iter().enumerate().map(|(index, item)| {
-                                div().id(gpui::SharedString::from(format!("outline-{index}"))).py_1()
-                                    .pl(px(item.level as f32 * 10.0)).cursor_pointer().child(item.title)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(page_0) = item.page { this.goto_explicit(page_0 as u32, cx); }
+                                let row = div().id(gpui::SharedString::from(format!("outline-{index}"))).py_1()
+                                    .pl(px(item.level as f32 * 10.0)).child(item.title);
+                                if let Some(page_0) = item.page {
+                                    row.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                                        this.goto_explicit(page_0 as u32, cx);
                                     }))
+                                } else {
+                                    row.opacity(0.45).child(" (unavailable)")
+                                }
                             }))
                             .child(div().py_2().child("Recent"))
                             .child(div().text_sm().py_2().child("Progress tracks app Previous/Next and Page Up/Down, not wheel scroll."))

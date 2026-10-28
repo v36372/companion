@@ -1163,6 +1163,7 @@ dependencies = [
  "companion-store",
  "gpui-pdf",
  "gpui-pre",
+ "hayro",
  "serde",
  "tempfile",
 ]
