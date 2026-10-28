@@ -96,10 +96,17 @@ impl Render for AskBar {
             if input.read(cx).presentation().is_masked() != self.secret {
                 input.update(cx, |input, cx| input.set_masked(self.secret, window, cx));
             }
-            Input::new(input).into_any_element()
+            Input::new(input)
+                .aria_label(if self.secret {
+                    "PDF password"
+                } else {
+                    "OpenRouter model id"
+                })
+                .into_any_element()
         } else {
             init_input!(textarea, TextareaState, "Ask about this PDF…");
             Textarea::new(self.textarea.as_ref().unwrap())
+                .aria_label("Question about this PDF")
                 .h(gpui::px(96.))
                 .into_any_element()
         };

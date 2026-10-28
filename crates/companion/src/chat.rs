@@ -47,6 +47,7 @@ fn status_label(bridge: &Bridge) -> &'static str {
         Availability::Ready if bridge.status.starts_with("Resuming") => "Resuming…",
         Availability::Ready if bridge.status == "Stopping…" => "Stopping…",
         Availability::Ready if bridge.running => "Thinking…",
+        Availability::Ready if bridge.status.starts_with("Open a PDF") => "Open a PDF to chat",
         Availability::Ready if !bridge.can_chat() => "Preparing document…",
         Availability::Ready => "Ready",
     }

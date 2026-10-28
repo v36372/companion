@@ -924,11 +924,11 @@ impl Render for CompanionWindow {
                             })),
                     )
                     .child(center)
-                    .child(crate::chat::column(&self.bridge, self.composer.clone(), self.model_picker.clone(), &self.chat_scroll, self.key_setup_open,
+                    .child(div().w(px(360.)).h_full().flex_shrink_0().child(crate::chat::column(&self.bridge, self.composer.clone(), self.model_picker.clone(), &self.chat_scroll, self.key_setup_open,
                         cx.listener(|this, _, _, cx| { this.key_setup_open = !this.key_setup_open; cx.notify(); }),
                         cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); }),
                         cx.listener(|this, _, _, cx| { this.bridge.submit("What did I just read?".into(), None); cx.notify(); }),
-                        navigate_quote, retry, cx)),
+                        navigate_quote, retry, cx))),
             )
             .children(self.password_open.then(|| {
                 div().absolute().inset_0().flex().items_center().justify_center()
