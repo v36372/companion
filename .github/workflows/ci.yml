@@ -27,8 +27,17 @@ jobs:
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev libsqlite3-dev libdbus-1-dev
       - name: Install pinned Rust toolchain
         run: rustup show
+      # CI checks correctness, not GUI responsiveness; avoid optimising all deps.
+      - name: Use unoptimised CI dev profile
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
+            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
+          # rust-cache does not include workspace profile settings in its key.
+          shared-key: ci-dev-unoptimised-v1
           cache-on-failure: true
       - name: Check formatting
         if: hashFiles('Cargo.toml') != ''
@@ -147,8 +156,16 @@ jobs:
         working-directory: agent
       - name: Install pinned Rust toolchain
         run: rustup show
+      # Match rust's CI-only profile and keep local GUI development optimised.
+      - name: Use unoptimised CI dev profile
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
+            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-dev-unoptimised-v1
           key: agent
           cache-on-failure: true
       - name: Lint workspace with agent and mock-provider features

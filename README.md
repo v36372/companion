@@ -316,8 +316,12 @@ compilation may still be running when the observation period ends.
 
 CI disables Rust debug information and incremental compilation to keep cached
 artifacts small and use consistent profiles across checks and the component harness.
-The optimised dev profile applies locally and in CI; debug information remains
-at Cargo's default locally. The CI formatting command is the one
+Local dev builds use the optimised profile above, with Cargo's default debug
+information. CI overrides dev optimisation to level 0 for workspace code and
+dependencies via its Cargo config: correctness checks do not need interactive
+GUI performance, and optimising every dependency makes cold checks much slower.
+Its Rust cache has an explicit profile namespace to avoid mixing those artifacts.
+The CI formatting command is the one
 shown above. Mock-provider testing exercises the real component without external
 requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
 
