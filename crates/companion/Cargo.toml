@@ -23,6 +23,11 @@ companion-pdf = { path = "../companion-pdf" }
 companion-store = { path = "../companion-store" }
 directories.workspace = true
 gpui.workspace = true
+gpui-component.workspace = true
+# Direct constraints also pin the component library's transitive crates.
+gpui-base.workspace = true
+gpui-component-macros.workspace = true
+gpui-kit-assets.workspace = true
 gpui-pdf.workspace = true
 gpui_platform.workspace = true
 rfd.workspace = true
