@@ -271,8 +271,6 @@ pub fn column(
     composer: Entity<AskBar>,
     model_picker: Entity<crate::model_picker::ModelPicker>,
     scroll: &gpui::ScrollHandle,
-    _key_setup_open: bool,
-    _setup: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     follow: impl Fn(&bool, &mut gpui::Window, &mut gpui::App) + 'static,
     ask: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     navigate: impl Fn(u32, &mut gpui::Window, &mut gpui::App) + Clone + 'static,
