@@ -65,6 +65,14 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
                         .parse()
                         .unwrap();
                     if request.len() >= end + 4 + size {
+                        let body: Value =
+                            serde_json::from_slice(&request[end + 4..end + 4 + size]).unwrap();
+                        let expected = match turn {
+                            0 => "openai/gpt-4o-mini",
+                            1 => "~anthropic/claude-sonnet-latest",
+                            _ => "vendor/custom-model:v1",
+                        };
+                        assert_eq!(body["model"], expected);
                         if turn == 0 {
                             let body = String::from_utf8_lossy(&request[end + 4..]);
                             assert!(body.contains("BEGIN SELECTED PDF QUOTE"));
@@ -95,6 +103,8 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
         c.execute("INSERT INTO documents(id,title,source_path,stored_path,sha256) VALUES ('A','A','','','a'),('B','B','','','b')", [])?;
         Ok(())
     }).unwrap();
+    hub.set_model_id("openai/gpt-4o-mini").unwrap();
+    let preferences = hub.clone();
     let abort = Abort::default();
     let (tx, commands) = crossbeam_channel::unbounded();
     let (out, events) = async_channel::unbounded();
@@ -128,6 +138,11 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
     );
     pump(&mut bridge, &events, |b| b.live.contains("token"));
     assert!(bridge.running);
+    // The active HTTP request keeps its original model. The queued next turn
+    // must configure the same durable conversation, without a restart.
+    preferences
+        .set_model_id("~anthropic/claude-sonnet-latest")
+        .unwrap();
     bridge.submit("follow-up".into(), None);
     assert_eq!(bridge.queued(), 1);
     pump(&mut bridge, &events, |b| !b.running && b.queued() == 0);
@@ -158,6 +173,7 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
             .iter()
             .all(|s| !s.text.contains("---BEGIN"))
     );
+    preferences.set_model_id("vendor/custom-model:v1").unwrap();
     bridge.submit("cancel".into(), None);
     pump(&mut bridge, &events, |b| b.live.contains("turn2"));
     let at = Instant::now();

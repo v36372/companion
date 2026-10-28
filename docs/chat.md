@@ -55,10 +55,12 @@ are discarded. Shutdown queues close after cancellation and app quit awaits
 worker completion, so the guest disposes its attached view. Conversation switch
 also disposes the previous view. See [virtual document lifecycle](virtual-doc-fs.md).
 
-The model id is selected from the guest's OpenRouter catalog, preferring the
-saved setting (then the catalog's Haiku alias, then its first available model).
-The selected provider/model is saved without credentials. There is no model
-picker in this pane yet.
+The compact **Model** control above the pane offers four friendly OpenRouter
+choices and a **Custom…** id input. SQLite `model_id` defaults to the Haiku alias.
+Validation rejects empty, oversized or non-slug input inline without saving.
+The bridge reads this preference and calls Configure before each submit,
+including queued follow-ups; changing it never alters a running request.
+See the README's model selection section for the precise validation rules.
 
 ## Window-independent verification
 
