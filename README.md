@@ -230,6 +230,13 @@ to `0`. These are Cargo build controls, not app settings.
 
 ## Development and CI
 
+For repeated local agent builds, `scripts/build-agent.sh` skips npm installation,
+bundling and componentization when the nonempty Wasm is newer than the guest
+sources, WIT, package lock and build configuration. Use `--force` after restoring
+files with preserved timestamps or removing inputs. Normal `npm run componentize`
+always rebuilds. See [build performance](docs/build-performance.md) for CI caching,
+measurement commands and the debug-information tradeoff.
+
 Reader-only Rust checks need no generated component; parsing/store tests need no
 display:
 
@@ -263,13 +270,16 @@ Without `--built` it also installs/bundles/componentizes the guest.
 CI has two **independent Ubuntu 24.04 jobs**:
 
 - **rust:** apt dependencies, pinned toolchain, formatting, locked workspace
-  build, workspace tests, and a guard against ambiguous GPUI snapshots.
-- **agent:** Node 22, npm tests/typecheck/build/componentize, WASI import artifact,
-  Node local-provider mock, pinned Rust, host component harness and headless
-  bridge tests. It uploads the WASM and generated WIT description.
+  build, workspace tests, Clippy (`-D warnings`), and a guard against ambiguous
+  GPUI snapshots.
+- **agent:** Node 22, npm tests/typecheck, content-cached build/componentize and
+  WASI import artifact, Node local-provider mock, pinned Rust, agent/mock-feature
+  Clippy (`-D warnings`), host component harness and headless bridge tests.
+  It uploads the WASM and generated WIT description even on cache hits.
 
-**Clippy is not currently run by CI**, though PR verification has used
-`cargo clippy --workspace --all-targets`. The CI formatting command is the one
+CI disables Rust debug information and incremental compilation to keep cached
+artifacts small and use consistent profiles across checks and the component harness.
+Local Cargo defaults are unchanged. The CI formatting command is the one
 shown above. Mock-provider testing exercises the real component without external
 requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
 
