@@ -37,7 +37,9 @@ sudo apt-get install -y \
 
 From the repository root, after installing the prerequisites and setting an
 OpenRouter key as described below. The commands are the same on both platforms;
-both Linux checks and a macOS release launch are CI-verified.
+both Linux checks and a macOS release launch are CI-verified. Use a **release
+build** for normal reading: debug builds are slow for this GUI app, even with
+the optimised dev profile described below.
 
 ```sh
 cd agent
@@ -45,8 +47,8 @@ npm ci
 npm run build
 npm run componentize
 cd ..
-cargo build -p companion --features agent --locked
-cargo run -p companion --bin learning-companion --features agent -- path/to/book.pdf
+cargo build --release -p companion --features agent --locked
+cargo run --release -p companion --bin learning-companion --features agent -- path/to/book.pdf
 ```
 
 Replace `path/to/book.pdf` with your PDF, or omit `-- path/to/book.pdf` to reopen
@@ -63,22 +65,32 @@ ignored by Git, and embedded by the Cargo **`agent`** feature. Rebuild it after
 changing guest code, then rebuild the Rust app. Enabling `agent` without the
 artifact fails with build instructions.
 
-Debug and release builds/runs (from the root, after generating the component):
+Recommended release build/run (from the root, after generating the component):
+
+```sh
+cargo build --release -p companion --features agent --locked
+cargo run --release -p companion --bin learning-companion --features agent -- path/to/book.pdf
+```
+
+For development/debugging, omit `--release`. Debug builds are slow for a GUI
+app, especially PDF rendering and agent startup. The dev profile now optimises
+workspace code at level 1 and dependencies (including GPUI, hayro and Wasmtime)
+at level 3 to keep development usable; release is still recommended for reading.
 
 ```sh
 cargo build --workspace --locked --features agent
-cargo run -p companion --bin learning-companion --features agent
-cargo build -p companion --features agent --release --locked
-cargo run -p companion --bin learning-companion --features agent --release -- path/to/book.pdf
+cargo run -p companion --bin learning-companion --features agent -- path/to/book.pdf
 ```
 
 Without the feature, the default workspace build needs neither Node nor WASM
 and has **no agent**:
 
 ```sh
-cargo build --workspace --locked
-cargo run -p companion --bin learning-companion -- path/to/book.pdf
+cargo build --release --workspace --locked
+cargo run --release -p companion --bin learning-companion -- path/to/book.pdf
 ```
+
+Omit `--release` here too for a development/debugging build.
 
 Only one PDF is open at a time. **Open PDF…** replaces it; **Recent** reopens a
 managed copy. Switching documents cancels an active turn before attaching the
@@ -304,7 +316,8 @@ compilation may still be running when the observation period ends.
 
 CI disables Rust debug information and incremental compilation to keep cached
 artifacts small and use consistent profiles across checks and the component harness.
-Local Cargo defaults are unchanged. The CI formatting command is the one
+The optimised dev profile applies locally and in CI; debug information remains
+at Cargo's default locally. The CI formatting command is the one
 shown above. Mock-provider testing exercises the real component without external
 requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
 
