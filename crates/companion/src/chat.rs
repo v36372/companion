@@ -20,16 +20,27 @@ pub fn pane(
         .border_l_1()
         .border_color(rgb(0x3f3f46))
         .child("Agent")
-        .children(
-            bridge
-                .unavailable_reason()
-                .map(|reason| div().text_sm().text_color(rgb(0xfcd34d)).child(reason)),
-        )
         .child(
             div()
                 .text_sm()
-                .text_color(rgb(0xa1a1aa))
-                .child(bridge.status.clone()),
+                .text_color(rgb(if bridge.can_chat() {
+                    0xa1a1aa
+                } else {
+                    0xfcd34d
+                }))
+                .child(
+                    bridge
+                        .unavailable_reason()
+                        .unwrap_or_else(|| bridge.status.clone()),
+                ),
+        )
+        .children(
+            (!bridge.can_chat() && bridge.status.starts_with("Not sent:")).then(|| {
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xfca5a5))
+                    .child(bridge.status.clone())
+            }),
         )
         .child(
             div()

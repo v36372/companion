@@ -109,11 +109,11 @@ impl Render for AskBar {
                         "Send ↵ · Shift+Enter for newline"
                     }),
             )
-            .children(self.disabled_reason.clone().map(|reason| {
+            .children(self.disabled_reason.as_ref().map(|_| {
                 div()
                     .text_sm()
                     .text_color(rgb(0xa1a1aa))
-                    .child(format!("Send disabled: {reason} You can keep typing."))
+                    .child("Send disabled — see Agent status. You can keep typing.")
             }))
     }
 }
