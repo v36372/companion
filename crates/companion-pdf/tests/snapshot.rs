@@ -126,3 +126,40 @@ fn ui_page_one_sql_zero_tool_goto_one_viewer_zero() {
     let go_to_page_0 = page_1_to_0(pdf_goto_page_1).unwrap();
     assert_eq!(go_to_page_0, 0);
 }
+
+#[test]
+fn encrypted_snapshot_requires_password_and_keeps_outline_zero_based() {
+    let bytes = Arc::new(include_bytes!("fixtures/encrypted.pdf").to_vec());
+    assert!(matches!(
+        DocSnapshot::build(bytes.clone(), meta()),
+        Err(gpui_pdf::LoadError::Locked)
+    ));
+    assert!(matches!(
+        DocSnapshot::build_with_password(bytes.clone(), meta(), "wrong"),
+        Err(gpui_pdf::LoadError::Locked)
+    ));
+    let snapshot = DocSnapshot::build_with_password(bytes, meta(), "companion").unwrap();
+    assert_eq!(snapshot.meta.page_count, 2);
+    assert!(
+        snapshot.pages[0]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("Companion")
+    );
+    assert!(snapshot.pages[1].json.no_text_layer);
+    assert_eq!(
+        snapshot
+            .outline
+            .iter()
+            .map(|item| item.page)
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(1)]
+    );
+    assert_eq!(snapshot.outline[0].title, "Text chapter");
+    assert!(snapshot.outline_md.contains("Text chapter (page 1)"));
+    assert!(snapshot.outline_md.contains("Scanned chapter (page 2)"));
+    // Rail navigation passes the unmodified 0-based target to the tracked path.
+    snapshot.record_navigation(snapshot.outline[1].page.unwrap() as u32, 0.0);
+    assert_eq!(snapshot.viewport.read().unwrap().page, 2);
+}

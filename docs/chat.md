@@ -44,7 +44,8 @@ carry transcript snapshots; on-stream carries replaceable pi.live snapshots.
 The UI awaits an async event channel (no token polling timer), so a local user
 commit wakes GPUI immediately instead of waiting for the PDF-command drain.
 `session_failed`, `task_parked`, `task_faulted`, other reports, and short spatial
-tool traces are shown in the pane.
+tool traces are shown in the pane. Parked tasks have a conversation-scoped Retry
+action. See [reader UX](reader-ux.md) for crash-resume, outline, Find and passwords.
 
 The bridge immediately invalidates the old conversation on document switch.
 It requests the HTTP cancellation atomic **and** pollable wakeup, waits for the

@@ -3,7 +3,10 @@
 use companion_env::{PdfCommand, VirtualDocFs};
 use crossbeam_channel::Sender;
 use serde_json::{Value, json};
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct Attachment {
@@ -18,6 +21,7 @@ pub enum Command {
     Attach(Attachment),
     Submit { conversation_id: i64, json: String },
     Follow { conversation_id: i64, enabled: bool },
+    Retry { task_id: i64 },
     Close,
 }
 
@@ -28,6 +32,7 @@ pub enum Event {
     Stream(Value),
     Report(String),
     Settled,
+    Resuming,
     Error(String),
     Offline(String),
 }
@@ -75,6 +80,8 @@ pub struct Bridge {
     pub live: String,
     pub notices: Vec<String>,
     pub follow: bool,
+    pub parked_task: Option<i64>,
+    parked_by_conversation: HashMap<i64, i64>,
 }
 
 impl Bridge {
@@ -97,6 +104,8 @@ impl Bridge {
             live: String::new(),
             notices: Vec::new(),
             follow: true,
+            parked_task: None,
+            parked_by_conversation: HashMap::new(),
         }
     }
 
@@ -136,6 +145,7 @@ impl Bridge {
         self.conversation = None;
         self.transcript.clear();
         self.notices.clear();
+        self.parked_task = None;
         self.live.clear();
     }
 
@@ -179,6 +189,21 @@ impl Bridge {
         }
     }
 
+    pub fn retry_parked(&mut self) {
+        if self.running || self.attaching || self.switching {
+            return;
+        }
+        if let (Some(task_id), Some(tx)) = (self.parked_task.take(), &self.tx) {
+            if let Some(id) = self.conversation {
+                self.parked_by_conversation.remove(&id);
+            }
+            (self.prepare)();
+            self.running = true;
+            self.status = "Retrying…".into();
+            let _ = tx.send(Command::Retry { task_id });
+        }
+    }
+
     pub fn toggle_follow(&mut self) {
         if let (Some(id), Some(tx)) = (self.conversation, &self.tx) {
             self.follow = !self.follow;
@@ -197,6 +222,7 @@ impl Bridge {
             return;
         };
         if let Some(doc) = self.pending_document.take() {
+            (self.prepare)();
             self.attaching = true;
             self.switching = false;
             self.status = "Attaching document…".into();
@@ -226,8 +252,21 @@ impl Bridge {
                 self.attaching = false;
                 if self.pending_document.is_none() && !self.switching {
                     self.conversation = Some(id);
+                    self.parked_task = self.parked_by_conversation.get(&id).copied();
                 }
-                self.status = "Ready".into();
+                self.status = if self.running {
+                    "Resuming… · Esc to stop"
+                } else {
+                    "Ready"
+                }
+                .into();
+            }
+            Event::Resuming => {
+                if self.switching {
+                    (self.cancel)();
+                }
+                self.running = true;
+                self.status = "Resuming… · Esc to stop".into();
             }
             Event::Settled => {
                 self.running = false;
@@ -242,7 +281,10 @@ impl Bridge {
                     if let Some(entries) = value["entries"].as_array() {
                         self.transcript = entries.iter().filter_map(entry_text).collect();
                     }
-                    if value["busy"] == true {
+                    if value["busy"] == true
+                        && !self.status.starts_with("Resuming")
+                        && self.status != "Stopping…"
+                    {
                         self.status = "Running · Esc to stop".into();
                     }
                 }
@@ -253,7 +295,26 @@ impl Bridge {
                 }
             }
             Event::Report(message) => {
-                self.notices.push(message);
+                if let Ok(report) = serde_json::from_str::<Value>(&message) {
+                    if report["type"] == "task_parked"
+                        && let (Some(conversation), Some(task)) = (
+                            report["task"]["conversationId"].as_i64(),
+                            report["task"]["id"].as_i64(),
+                        )
+                    {
+                        self.parked_by_conversation.insert(conversation, task);
+                        if Some(conversation) == self.conversation {
+                            self.parked_task = Some(task);
+                        }
+                    }
+                    self.notices.push(format!(
+                        "{}: {}",
+                        report["type"].as_str().unwrap_or("report"),
+                        report["message"].as_str().unwrap_or_default()
+                    ));
+                } else {
+                    self.notices.push(message);
+                }
             }
             Event::Offline(message) => {
                 self.available = false;
@@ -453,25 +514,33 @@ fn run_with(
     fn wait(
         incoming: &crossbeam_channel::Receiver<E>,
         events: &async_channel::Sender<Event>,
-    ) -> anyhow::Result<Option<Vec<Value>>> {
+    ) -> anyhow::Result<(Option<Vec<Value>>, bool)> {
         let mut catalog = None;
+        let mut resumable = false;
         loop {
             let event = match incoming.recv()? {
                 E::Done(result) => {
                     result.map_err(anyhow::Error::msg)?;
-                    return Ok(catalog);
+                    return Ok((catalog, resumable));
                 }
                 E::Trapped { message, .. } => {
                     let _ = events.send_blocking(Event::Error(format!(
                         "Agent recovered after trap: {message}"
                     )));
-                    return Ok(catalog);
+                    return Ok((catalog, resumable));
                 }
-                E::OpenDocumentDone(json) => Event::Attached(
-                    serde_json::from_str::<Value>(&json)?["conversationId"]
-                        .as_i64()
-                        .ok_or_else(|| anyhow::anyhow!("missing conversation id"))?,
-                ),
+                E::OpenDocumentDone(json) => {
+                    let value: Value = serde_json::from_str(&json)?;
+                    resumable = value["resumable"] == true;
+                    if resumable {
+                        let _ = events.send_blocking(Event::Resuming);
+                    }
+                    Event::Attached(
+                        value["conversationId"]
+                            .as_i64()
+                            .ok_or_else(|| anyhow::anyhow!("missing conversation id"))?,
+                    )
+                }
                 E::Commit(json) => Event::Commit(serde_json::from_str(&json)?),
                 E::Chunk { json, .. } => Event::Stream(serde_json::from_str(&json)?),
                 E::Report(json) => {
@@ -481,11 +550,7 @@ fn run_with(
                             Some(serde_json::from_str(v["message"].as_str().unwrap_or("[]"))?);
                         continue;
                     }
-                    Event::Report(format!(
-                        "{}: {}",
-                        v["type"].as_str().unwrap_or("report"),
-                        v["message"].as_str().unwrap_or_default()
-                    ))
+                    Event::Report(json)
                 }
                 E::Aborted(_) => Event::Report("Stopped (abort completed)".into()),
                 E::Error(message) => Event::Error(message),
@@ -494,8 +559,9 @@ fn run_with(
             let _ = events.send_blocking(event);
         }
     }
-    let catalog =
-        wait(&incoming, events)?.ok_or_else(|| anyhow::anyhow!("missing model catalog"))?;
+    let catalog = wait(&incoming, events)?
+        .0
+        .ok_or_else(|| anyhow::anyhow!("missing model catalog"))?;
     let saved = hub.model_settings()?;
     let preferred = saved
         .as_ref()
@@ -515,7 +581,7 @@ fn run_with(
     })?;
     let _ = events.send_blocking(Event::Ready);
     while let Ok(command) = commands.recv() {
-        let submit = matches!(command, Command::Submit { .. });
+        let submit = matches!(command, Command::Submit { .. } | Command::Retry { .. });
         match command {
             Command::Attach(doc) => {
                 tx.send(H::SetDocument {
@@ -533,6 +599,9 @@ fn run_with(
                     req_json: json,
                 })?;
             }
+            Command::Retry { task_id } => {
+                tx.send(H::RetryTask { task_id })?;
+            }
             Command::Follow {
                 conversation_id,
                 enabled,
@@ -547,8 +616,19 @@ fn run_with(
                 break;
             }
         }
-        if let Err(error) = wait(&incoming, events) {
-            let _ = events.send_blocking(Event::Error(format!("Agent: {error:#}")));
+        match wait(&incoming, events) {
+            Ok((_, true)) => {
+                let _ = events.send_blocking(Event::Resuming);
+                tx.send(H::ResumeWait)?;
+                if let Err(error) = wait(&incoming, events) {
+                    let _ = events.send_blocking(Event::Error(format!("Resume: {error:#}")));
+                }
+                let _ = events.send_blocking(Event::Settled);
+            }
+            Err(error) => {
+                let _ = events.send_blocking(Event::Error(format!("Agent: {error:#}")));
+            }
+            _ => {}
         }
         if submit {
             let _ = events.send_blocking(Event::Settled);

@@ -71,8 +71,17 @@ pub struct DocSnapshot {
 impl DocSnapshot {
     /// Call on the background executor. At most four workers extract pages from
     /// our parse, independently of PdfView's private parse (design D6).
-    pub fn build(bytes: Arc<Vec<u8>>, mut meta: DocMeta) -> Result<Self, gpui_pdf::LoadError> {
-        let hayro = gpui_pdf::parse(bytes)?;
+    pub fn build(bytes: Arc<Vec<u8>>, meta: DocMeta) -> Result<Self, gpui_pdf::LoadError> {
+        Self::build_with_password(bytes, meta, "")
+    }
+
+    /// Password is borrowed for this parse only, never included in the snapshot.
+    pub fn build_with_password(
+        bytes: Arc<Vec<u8>>,
+        mut meta: DocMeta,
+        password: &str,
+    ) -> Result<Self, gpui_pdf::LoadError> {
+        let hayro = gpui_pdf::parse_with_password(bytes, password)?;
         meta.page_count = hayro.pages().len() as u32;
         let next = AtomicUsize::new(0);
         let slots = std::sync::Mutex::new((0..meta.page_count).map(|_| None).collect::<Vec<_>>());

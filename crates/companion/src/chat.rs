@@ -7,6 +7,7 @@ pub fn pane(
     composer: Entity<AskBar>,
     scroll: &gpui::ScrollHandle,
     navigate: impl Fn(u32, &mut gpui::Window, &mut gpui::App) + Clone + 'static,
+    retry: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     div()
         .w(px(360.))
@@ -34,8 +35,11 @@ pub fn pane(
                 .track_scroll(scroll)
                 .children(bridge.transcript.iter().enumerate().map(|(index, turn)| {
                     let navigate = navigate.clone();
+                    let (speaker, question) =
+                        turn.text.split_once('\n').unwrap_or(("", &turn.text));
                     div()
                         .py_3()
+                        .child(div().text_sm().child(speaker.to_owned()))
                         .children(turn.quote.as_ref().map(|quote| {
                             let page_0 = quote.page - 1;
                             div()
@@ -49,7 +53,7 @@ pub fn pane(
                                 .child(quote.label())
                                 .on_click(move |_, window, cx| navigate(page_0, window, cx))
                         }))
-                        .child(turn.text.clone())
+                        .child(question.to_owned())
                 }))
                 .children(bridge.notices.iter().map(|text| {
                     div()
@@ -64,6 +68,15 @@ pub fn pane(
             format!("{} follow-up(s) queued", bridge.queued())
         } else {
             "Select text, then Ask. Asking does not save a highlight.".into()
+        }))
+        .children(bridge.parked_task.map(|_| {
+            div()
+                .id("retry-parked-task")
+                .cursor_pointer()
+                .p_2()
+                .bg(rgb(0x3f3f46))
+                .child("Retry parked task")
+                .on_click(move |_, window, cx| retry(window, cx))
         }))
         .child(composer)
 }

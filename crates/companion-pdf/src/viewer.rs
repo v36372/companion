@@ -50,6 +50,14 @@ impl CompanionPdf {
             .update(cx, |view, cx| view.set_highlights(highlights, cx));
     }
 
+    pub fn toggle_search(&self, cx: &mut App) {
+        self.inner.update(cx, |view, cx| view.toggle_search(cx));
+    }
+
+    pub fn unlock(&self, password: String, cx: &mut App) {
+        self.inner.update(cx, |view, cx| view.unlock(password, cx));
+    }
+
     pub fn view(&self) -> Entity<PdfView> {
         self.inner.clone()
     }

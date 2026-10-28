@@ -8,12 +8,14 @@ pub enum AskEvent {
 pub struct AskBar {
     focus: FocusHandle,
     pub text: String,
+    pub secret: bool,
 }
 impl AskBar {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
             text: String::new(),
+            secret: false,
         }
     }
     pub fn focus(&self, window: &mut Window, cx: &mut gpui::App) {
@@ -65,7 +67,14 @@ impl Render for AskBar {
                 cx.notify();
             }))
             .child(if self.text.is_empty() {
-                "Ask about this PDF…".into()
+                if self.secret {
+                    "PDF password…"
+                } else {
+                    "Ask about this PDF…"
+                }
+                .into()
+            } else if self.secret {
+                "•".repeat(self.text.chars().count())
             } else {
                 self.text.clone()
             })
@@ -79,7 +88,11 @@ impl Render for AskBar {
                         this.submit(cx);
                         cx.stop_propagation();
                     }))
-                    .child("Send ↵ · Shift+Enter for newline"),
+                    .child(if self.secret {
+                        "Unlock ↵"
+                    } else {
+                        "Send ↵ · Shift+Enter for newline"
+                    }),
             )
     }
 }
