@@ -9,6 +9,7 @@ pub struct AskBar {
     focus: FocusHandle,
     pub text: String,
     pub secret: bool,
+    pub model_input: bool,
 }
 impl AskBar {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -16,13 +17,14 @@ impl AskBar {
             focus: cx.focus_handle(),
             text: String::new(),
             secret: false,
+            model_input: false,
         }
     }
     pub fn focus(&self, window: &mut Window, cx: &mut gpui::App) {
         self.focus.focus(window, cx);
     }
     fn submit(&mut self, cx: &mut Context<Self>) {
-        if !self.text.trim().is_empty() {
+        if self.model_input || !self.text.trim().is_empty() {
             cx.emit(AskEvent::Submit(self.text.clone()));
         }
     }
@@ -67,7 +69,9 @@ impl Render for AskBar {
                 cx.notify();
             }))
             .child(if self.text.is_empty() {
-                if self.secret {
+                if self.model_input {
+                    "OpenRouter model id…"
+                } else if self.secret {
                     "PDF password…"
                 } else {
                     "Ask about this PDF…"
@@ -88,7 +92,9 @@ impl Render for AskBar {
                         this.submit(cx);
                         cx.stop_propagation();
                     }))
-                    .child(if self.secret {
+                    .child(if self.model_input {
+                        "Save model ↵"
+                    } else if self.secret {
                         "Unlock ↵"
                     } else {
                         "Send ↵ · Shift+Enter for newline"

@@ -505,7 +505,7 @@ fn run_with(
     let (tx, rx) = crossbeam_channel::unbounded();
     let (out, incoming) = crossbeam_channel::unbounded();
     let worker = thread::spawn_with_secrets(runtime, abort, policy, secrets, rx, out, hub.clone());
-    let model = "~anthropic/claude-haiku-latest";
+    let model = hub.model_id()?;
     tx.send(H::Open {
         config_json: json!({"provider":"openrouter", "modelId":model, "prefix":"pi_"}).to_string(),
     })?;
@@ -559,26 +559,7 @@ fn run_with(
             let _ = events.send_blocking(event);
         }
     }
-    let catalog = wait(&incoming, events)?
-        .0
-        .ok_or_else(|| anyhow::anyhow!("missing model catalog"))?;
-    let saved = hub.model_settings()?;
-    let preferred = saved
-        .as_ref()
-        .filter(|s| s.provider == companion_store::settings::Provider::Openrouter)
-        .map(|s| s.model_id.as_str())
-        .unwrap_or(model);
-    let selected = catalog
-        .iter()
-        .find(|m| m["provider"] == "openrouter" && m["id"] == preferred)
-        .or_else(|| catalog.iter().find(|m| m["provider"] == "openrouter"))
-        .and_then(|m| m["id"].as_str())
-        .ok_or_else(|| anyhow::anyhow!("no OpenRouter model in catalog"))?;
-    let model = selected;
-    hub.set_model_settings(&companion_store::settings::ModelSettings {
-        provider: companion_store::settings::Provider::Openrouter,
-        model_id: model.into(),
-    })?;
+    wait(&incoming, events)?;
     let _ = events.send_blocking(Event::Ready);
     while let Ok(command) = commands.recv() {
         let submit = matches!(command, Command::Submit { .. } | Command::Retry { .. });
@@ -588,12 +569,22 @@ fn run_with(
                     fs: doc.fs,
                     pdf_tx: doc.pdf_tx,
                 })?;
+                let model = hub.model_id()?;
                 tx.send(H::OpenDocument { req_json: json!({"documentId":doc.document_id,"title":doc.title,"pageCount":doc.page_count,"provider":"openrouter","modelId":model}).to_string() })?;
             }
             Command::Submit {
                 conversation_id,
                 json,
             } => {
+                // Read at the turn boundary: a preference change during a run
+                // cannot reconfigure that run, but queued follow-ups use it.
+                let model = hub.model_id()?;
+                tx.send(H::Configure {
+                    conversation_id,
+                    agent_json: json!({"model":{"provider":"openrouter","modelId":model}})
+                        .to_string(),
+                })?;
+                wait(&incoming, events)?;
                 tx.send(H::SubmitPrepared {
                     conversation_id,
                     req_json: json,

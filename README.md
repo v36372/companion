@@ -121,23 +121,24 @@ host-only fallbacks **when keychain lookup fails**, not overrides of an existing
 keychain value (even an empty one). Restart after changing credentials. Tests use
 explicit in-memory stores and never read native keys.
 
-### Model selection (no model picker yet)
+### Model selection
 
-The desktop bridge opens the guest with provider `openrouter` and obtains its
-model catalog. It uses the saved `settings` rows `provider` and `modelId` (JSON
-values) **only if the saved provider is `openrouter`**; otherwise its preference
-is **`~anthropic/claude-haiku-latest`**. It selects an exact OpenRouter catalog
-match for that preference, or the **first OpenRouter model** if the preference
-is absent. If a saved OpenRouter id is unavailable, it falls straight back to the
-first model, not to Haiku. No OpenRouter model means startup fails. The selected
-provider/id are saved without secrets.
+Click **Model** above the chat pane to choose Claude Haiku (the default), Claude
+Sonnet, GPT-4o mini or Gemini 2.5 Flash. **Custom…** accepts another OpenRouter
+model id. Ids are trimmed, must contain 1–128 ASCII letters, digits or `~._:/-`,
+and cannot contain whitespace. Invalid input shows an inline error and is not
+saved. The JSON string setting `model_id` persists in SQLite; unset means
+`~anthropic/claude-haiku-latest`. Legacy `provider`/`modelId` preferences are not
+used by this picker. There are no network calls to list models.
 
-This choice is supplied when **creating** a document's conversation; reopening
-an existing mapping reattaches its durable conversation rather than changing its
-model. There is **no model-selection environment variable** and no model picker
-in the current UI. Store APIs support model preferences; the shipped desktop
-bridge still chooses OpenRouter, even though the host/guest have other provider
-plumbing.
+The next submitted turn (including a queued follow-up) configures the existing
+durable conversation with the chosen OpenRouter id. A run already in progress
+keeps its model; changing the preference does not restart the agent or app.
+Custom model availability and tool support are ultimately checked by OpenRouter.
+For ids absent from the bundled catalog, the guest uses a local text-only
+OpenAI-compatible definition with a conservative 32,768-token context and
+4,096-token output cap. Pricing metadata is zero/unknown, not a free-model claim.
+Known models keep their bundled capabilities, limits and pricing.
 
 ### Web search
 
@@ -290,8 +291,8 @@ requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
 - The pinned ComponentizeJS/weval build-tool chain has a reported **critical npm
   audit archive-extraction advisory** (`decompress`), plus moderate build-time
   advisories. Do not use it to process untrusted archives.
-- The composer is minimal (no rich editing/IME support), and there is no model
-  picker, provider selector or search-settings UI. One document is attached at a
+- The composer and custom model input are minimal (no rich editing/IME support),
+  and there is no provider selector or search-settings UI. One document is attached at a
   time. Virtual filesystem watchers do not fire; shell/git-worktree semantics are
   deliberately unsupported.
 - A crash between conversation creation and its document-map insertion can leave

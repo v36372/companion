@@ -37,6 +37,7 @@ pub struct CompanionWindow {
     bridge: Bridge,
     composer: Entity<AskBar>,
     password_bar: Entity<AskBar>,
+    model_picker: Entity<crate::model_picker::ModelPicker>,
     password_open: bool,
     password_focus_pending: bool,
     chat_scroll: gpui::ScrollHandle,
@@ -79,6 +80,7 @@ impl CompanionWindow {
                 Some(format!("Cannot open catalog: {error:#}")),
             ),
         };
+        let model_picker = cx.new(|cx| crate::model_picker::ModelPicker::new(catalog.clone(), cx));
         let composer = cx.new(AskBar::new);
         cx.subscribe(&composer, |this, _, event: &AskEvent, cx| {
             match event {
@@ -142,6 +144,7 @@ impl CompanionWindow {
         let bridge = Bridge::off();
         let mut view = Self {
             pdf: None,
+            model_picker,
             focus,
             dialog_open: false,
             catalog,
@@ -833,7 +836,8 @@ impl Render for CompanionWindow {
                             })),
                     )
                     .child(center)
-                    .child(div().flex().flex_col().h_full()
+                    .child(div().flex().flex_col().h_full().w(px(360.)).flex_shrink_0()
+                        .child(self.model_picker.clone())
                         .child(div().id("follow-mode").px_4().py_2().cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); }))
                             .child(if self.bridge.follow { "Follow: on" } else { "Follow: off" }))

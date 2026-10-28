@@ -61,8 +61,11 @@ See [reader UX](../docs/reader-ux.md) for recovery states and parked-task UI.
 `submit` awaits `submission.wait(BACKGROUND_CONTEXT)` **on-stack**; there is no
 poll pump. The view is subscribed before submit. Live changes use on-stream;
 on-commit carries only head-entry / busy transitions plus initial attachment.
-`models.getModels()` is sent once per open via on-report; choose a model id from
-that catalog rather than assuming the design's example id exists.
+`models.getModels()` is sent once per open via on-report. The desktop picker
+persists `model_id` and uses configure before the next submit. Unknown OpenRouter
+slugs are registered locally as text-only OpenAI-compatible models (32,768-token
+context, 4,096-token output, zero/unknown pricing); known catalog metadata is
+unchanged. No network model discovery is used.
 
 The host thread owns its synchronous Store. Send HostToGuest commands, consume
 GuestToHost events. Call `Abort::request()` for Esc (not just the atomic): this
@@ -113,8 +116,8 @@ google). Host-only fallback variables are `COMPANION_OPENROUTER_API_KEY`,
 MemorySecretStore and never instantiate/read the native store for requests.
 A live run needs a user-supplied OpenRouter key in that keychain or host variable,
 a model id chosen from the printed catalog, and outbound HTTPS. No live request
-has been made. Settings persist provider + modelId and the non-secret search
-rollout flag in companion-store.
+has been made. The desktop model picker persists `model_id` and the non-secret search rollout
+flag in companion-store. Older provider + modelId APIs remain for compatibility.
 
 Brave requests are restricted to GET `/res/v1/web/search`, a 10 s total deadline
 (including key lookup, headers and body), and a 1 MiB running response cap.

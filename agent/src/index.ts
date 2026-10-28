@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { selectableOpenrouterProvider } from './openrouter-models.ts';
 import {
   createRegistry,
   Harness,
@@ -33,13 +33,14 @@ export { spikeSse, spikeBusy } from './spike.ts';
 import './streams.ts';
 
 let harness: Harness | undefined;
+let openrouter = selectableOpenrouterProvider();
 let database: HostSqliteDatabase;
 let creatingDocument: OpenDocumentReq | undefined;
 let attached: { conv: Conversation; dispose: () => void; followChanged: (enabled: boolean) => void } | undefined;
 
 function installProvider(models: ReturnType<typeof createModels>, provider: OpenConfig["provider"]) {
   // v1 default is openrouter. openai/anthropic remain available if settings switch.
-  if (provider === "openrouter") models.setProvider(openrouterProvider());
+  if (provider === "openrouter") models.setProvider(openrouter.provider);
   else if (provider === "openai") models.setProvider(openaiProvider());
   else if (provider === "anthropic") models.setProvider(anthropicProvider());
 }
@@ -51,6 +52,8 @@ export async function open(configJson: string): Promise<void> {
   const models = createModels({ credentials: dummyCredentials,
     authContext: { env: async () => undefined, fileExists: async () => false },
   });
+  openrouter = selectableOpenrouterProvider();
+  if (config.provider === 'openrouter') openrouter.ensure(config.modelId);
   installProvider(models, config.provider);
   // Host overwrite of Authorization is the only strip. No guest transformHeaders
   // (HarnessSettings.stream has none; Models.stream() is called inside the Harness).
@@ -104,6 +107,7 @@ export async function open(configJson: string): Promise<void> {
 export async function openDocument(reqJson: string): Promise<string> {
   if (!harness) throw new Error("harness closed");
   const req = JSON.parse(reqJson) as OpenDocumentReq;
+  if (req.provider === 'openrouter') openrouter.ensure(req.modelId);
   if (!await database.get('SELECT id FROM documents WHERE id = ?', req.documentId))
     throw new Error('unknown document');
   const mapped = await database.get<{ conversation_id: number }>(
@@ -200,6 +204,7 @@ export async function setFollow(conversationId: number, enabled: boolean): Promi
 export async function configure(conversationId: number, agentJson: string): Promise<void> {
   const conv = await conversation(conversationId);
   const change = JSON.parse(agentJson) as DurableAgentChange;
+  if (change.model?.provider === 'openrouter') openrouter.ensure(change.model.modelId);
   await conv.configure(change, BACKGROUND_CONTEXT);
 }
 
