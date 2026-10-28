@@ -42,11 +42,41 @@ pub struct CompanionWindow {
     password_focus_pending: bool,
     chat_scroll: gpui::ScrollHandle,
     open_generation: u64,
+    import: ImportState,
     pub(crate) doc_env: Option<Arc<companion_env::VirtualDocFs>>,
     pub(crate) pdf_commands: (
         crossbeam_channel::Sender<companion_env::PdfCommand>,
         crossbeam_channel::Receiver<companion_env::PdfCommand>,
     ),
+}
+
+/// Last requested file wins, even if an older background import finishes later.
+/// Stale imports may populate the catalog, but never replace the viewer or errors.
+#[derive(Default)]
+struct ImportState {
+    generation: u64,
+    pending: bool,
+}
+
+impl ImportState {
+    fn start(&mut self) -> u64 {
+        self.invalidate();
+        self.pending = true;
+        self.generation
+    }
+
+    fn invalidate(&mut self) {
+        self.generation += 1;
+        self.pending = false;
+    }
+
+    fn finish(&mut self, generation: u64) -> bool {
+        if generation != self.generation || !self.pending {
+            return false;
+        }
+        self.pending = false;
+        true
+    }
 }
 
 fn open_catalog() -> anyhow::Result<(PathBuf, Arc<SqliteHub>)> {
@@ -162,6 +192,7 @@ impl CompanionWindow {
             password_focus_pending: false,
             chat_scroll: gpui::ScrollHandle::new(),
             open_generation: 0,
+            import: ImportState::default(),
             doc_env: None,
             pdf_commands: crossbeam_channel::unbounded(),
         };
@@ -198,6 +229,7 @@ impl CompanionWindow {
     /// Flush pending explicit navigation before quitting; background timers may
     /// not run once the application event loop has stopped.
     pub fn close_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.import.invalidate();
         self.bridge.close();
         if let Some(catalog) = &self.catalog {
             for (document_id, (progress, generation)) in &self.navigation {
@@ -262,19 +294,33 @@ impl CompanionWindow {
     }
 
     fn open_pdf(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let _span = tracing::info_span!(target: "companion", "open_pdf").entered();
-        let result = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Catalog unavailable"))
-            .and_then(|catalog| catalog.import_pdf(&path, &self.data_dir));
-        match result {
-            Ok(document) => self.open_document(document, window, cx),
-            Err(error) => {
-                self.error = Some(format!("Cannot import PDF: {error:#}"));
+        let generation = self.import.start();
+        let catalog = self.catalog.clone();
+        let data_dir = self.data_dir.clone();
+        self.error = None;
+        // Reading, hashing, copying, and catalog I/O all run off the UI thread.
+        // Keep the current document usable until the replacement is ready.
+        let task = cx.background_executor().spawn(async move {
+            let _span = tracing::info_span!(target: "companion", "import_pdf").entered();
+            catalog
+                .ok_or_else(|| anyhow::anyhow!("Catalog unavailable"))?
+                .import_pdf(&path, &data_dir)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !this.import.finish(generation) {
+                    return;
+                }
+                match result {
+                    Ok(document) => this.open_document(document, window, cx),
+                    Err(error) => this.error = Some(format!("Cannot import PDF: {error:#}")),
+                }
                 cx.notify();
-            }
-        }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn refresh_recent(&mut self) {
@@ -287,6 +333,8 @@ impl CompanionWindow {
     }
 
     fn open_document(&mut self, document: Document, window: &mut Window, cx: &mut Context<Self>) {
+        // Choosing a Recent file also supersedes any in-flight import.
+        self.import.invalidate();
         let Some(catalog) = self.catalog.clone() else {
             return;
         };
@@ -710,6 +758,7 @@ impl Render for CompanionWindow {
             .flex_1()
             .min_w_0()
             .h_full()
+            .overflow_hidden()
             .children(scanned.then(|| {
                 div().p_2().bg(rgb(0x713f12)).child(format!(
                     "Page {}: This page has no text. (Last explicit navigation)",
@@ -742,7 +791,14 @@ impl Render for CompanionWindow {
                     )
             }));
         let center = match &self.pdf {
-            Some(pdf) => center.child(div().flex_1().min_h_0().child(pdf.view())),
+            Some(pdf) => center.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(pdf.view()),
+            ),
             None => center
                 .flex()
                 .items_center()
@@ -788,6 +844,8 @@ impl Render for CompanionWindow {
                             .on_click(cx.listener(|this, _, window, cx| this.pick_pdf(window, cx)))
                             .child(if self.dialog_open {
                                 "Choosing PDF…"
+                            } else if self.import.pending {
+                                "Importing PDF…"
                             } else {
                                 "Open PDF…"
                             }),
@@ -858,5 +916,38 @@ impl Render for CompanionWindow {
                         .child(div().py_2().text_sm().child("Password required or incorrect. Kept in memory only."))
                         .child(self.password_bar.clone()))
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImportState;
+
+    #[test]
+    fn latest_import_wins_in_either_completion_order() {
+        for stale_finishes_first in [true, false] {
+            let mut state = ImportState::default();
+            let first = state.start();
+            let second = state.start();
+            if stale_finishes_first {
+                assert!(!state.finish(first));
+                assert!(state.pending);
+            }
+            assert!(state.finish(second));
+            assert!(!state.pending);
+            assert!(!state.finish(first));
+            assert!(!state.finish(second));
+        }
+    }
+
+    #[test]
+    fn recent_or_close_invalidates_pending_import() {
+        let mut state = ImportState::default();
+        let pending = state.start();
+        state.invalidate();
+        assert!(!state.pending);
+        assert!(!state.finish(pending));
+        let next = state.start();
+        assert!(state.finish(next));
     }
 }
