@@ -20,7 +20,13 @@ use companion_pdf::{
     text_layer::live_selection,
 };
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
-use gpui::{Context, Entity, FocusHandle, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Entity, FocusHandle, Window, div, prelude::*, px};
+use gpui_component::{
+    ActiveTheme, Disableable, IconName, Root,
+    button::{Button, ButtonVariants},
+    notification::Notification,
+    resizable::{h_resizable, resizable_panel},
+};
 
 #[path = "sidebar.rs"]
 mod sidebar;
@@ -28,6 +34,7 @@ mod sidebar;
 pub struct CompanionWindow {
     pdf: Option<CompanionPdf>,
     focus: FocusHandle,
+    window_title: String,
     dialog_open: bool,
     catalog: Option<Arc<SqliteHub>>,
     data_dir: PathBuf,
@@ -38,7 +45,6 @@ pub struct CompanionWindow {
     error: Option<String>,
     selection: Option<(LiveSelection, String)>,
     bridge: Bridge,
-    key_setup_open: bool,
     composer: Entity<AskBar>,
     password_bar: Entity<AskBar>,
     model_picker: Entity<crate::model_picker::ModelPicker>,
@@ -178,6 +184,7 @@ impl CompanionWindow {
             pdf: None,
             model_picker,
             focus,
+            window_title: String::new(),
             dialog_open: false,
             catalog,
             data_dir,
@@ -188,7 +195,6 @@ impl CompanionWindow {
             error,
             selection: None,
             bridge,
-            key_setup_open: false,
             composer,
             password_bar,
             password_open: false,
@@ -335,9 +341,57 @@ impl CompanionWindow {
         }
     }
 
-    fn open_document(&mut self, document: Document, window: &mut Window, cx: &mut Context<Self>) {
-        // Choosing a Recent file also supersedes any in-flight import.
-        self.import.invalidate();
+    fn open_document(
+        &mut self,
+        mut document: Document,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Metadata parsing and title-named link creation never run on the UI
+        // thread. The previous viewer stays usable until this preflight finishes.
+        let generation = self.import.start();
+        let display_dir = self.data_dir.join("display").join(&document.id);
+        let task = cx.background_executor().spawn(async move {
+            let bytes = Arc::new(std::fs::read(&document.stored_path)?);
+            let parsed = gpui_pdf::parse(bytes).ok();
+            document.title = companion_pdf::title::display_title(
+                parsed
+                    .as_ref()
+                    .and_then(|pdf| pdf.metadata().title.as_deref()),
+                &document.source_path,
+                &document.title,
+            );
+            let display_path = companion_pdf::title::display_path(
+                std::path::Path::new(&document.stored_path),
+                &display_dir,
+                &document.title,
+            )?;
+            Ok::<_, anyhow::Error>((document, display_path))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !this.import.finish(generation) {
+                    return;
+                }
+                match result {
+                    Ok((document, path)) => this.attach_document(document, path, window, cx),
+                    Err(error) => this.error = Some(format!("Cannot prepare PDF: {error:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn attach_document(
+        &mut self,
+        document: Document,
+        display_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(catalog) = self.catalog.clone() else {
             return;
         };
@@ -370,7 +424,7 @@ impl CompanionWindow {
         self.bridge.begin_switch();
         // Only release the old viewer once the new managed document is available.
         self.release_pdf(window, cx);
-        let pdf = CompanionPdf::open(PathBuf::from(&document.stored_path), cx);
+        let pdf = CompanionPdf::open(display_path, cx);
         self.page_0 = progress.as_ref().map_or(0, |progress| progress.page_0);
         pdf.goto_page_0(self.page_0 as usize, cx);
         let weak = cx.weak_entity();
@@ -397,6 +451,13 @@ impl CompanionWindow {
                     if this.password_open {
                         this.error = None;
                     }
+                    cx.notify();
+                } else if matches!(event, gpui_pdf::PdfEvent::LoadFailed) {
+                    this.password_open = false;
+                    this.error = viewer
+                        .read(cx)
+                        .load_error()
+                        .map(|message| message.to_string());
                     cx.notify();
                 }
             },
@@ -447,6 +508,13 @@ impl CompanionWindow {
                 Err(error) => return Err(anyhow::anyhow!("{error:?}")),
             };
             snapshot_catalog.set_page_count(&snapshot.meta.id, snapshot.meta.page_count)?;
+            snapshot_catalog.write(|connection| {
+                connection.execute(
+                    "UPDATE documents SET title=?1 WHERE id=?2",
+                    [&snapshot.meta.title, &snapshot.meta.id],
+                )?;
+                Ok(())
+            })?;
             Ok::<_, anyhow::Error>(Some(Arc::new(snapshot)))
         });
         cx.spawn(async move |this, cx| {
@@ -474,6 +542,7 @@ impl CompanionWindow {
                         }
                         if let Some(document) = &mut this.document {
                             document.page_count = Some(snapshot.meta.page_count);
+                            document.title = snapshot.meta.title.clone();
                         }
                         if let Some(pdf) = &mut this.pdf {
                             pdf.snapshot = Some(snapshot);
@@ -694,13 +763,7 @@ impl CompanionWindow {
                     page: highlight.page_0 as usize,
                     quote: highlight.quote_text,
                     occurrence: highlight.occurrence as usize,
-                    color: gpui::Hsla::from(rgb(match highlight.color.as_str() {
-                        "green" => 0x86efac,
-                        "blue" => 0x93c5fd,
-                        "pink" => 0xf9a8d4,
-                        "purple" => 0xc4b5fd,
-                        _ => 0xfde047,
-                    })),
+                    color: companion_pdf::highlight_color(&highlight.color),
                     region: None,
                 })
                 .collect())
@@ -736,6 +799,24 @@ impl CompanionWindow {
 
 impl Render for CompanionWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let spacing = cx.theme().spacing_tokens();
+        let typography = cx.theme().typography_tokens();
+        let radius = cx.theme().radius;
+        let title = self
+            .document
+            .as_ref()
+            .map_or("Learning Companion".to_owned(), |doc| {
+                format!("{} — Learning Companion", doc.title)
+            });
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+        if let Some(error) = self.error.take() {
+            Root::update(window, cx, |root, window, cx| {
+                root.push_notification(Notification::error(error).autohide(false), window, cx);
+            });
+        }
         if self.password_open && self.password_focus_pending {
             self.password_focus_pending = false;
             self.password_bar
@@ -766,54 +847,31 @@ impl Render for CompanionWindow {
                 cx.notify();
             });
         };
+        if let Some(pdf) = &self.pdf {
+            let theme = cx.theme();
+            pdf.set_style(
+                gpui_pdf::PdfStyle {
+                    bg: theme.muted,
+                    border: theme.border,
+                    placeholder_bg: theme.secondary,
+                    placeholder_fg: theme.muted_foreground,
+                    header_fg: theme.foreground,
+                    header_muted: theme.muted_foreground,
+                },
+                cx,
+            );
+        }
         let snapshot = self.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref());
         let scanned = snapshot
             .and_then(|snapshot| snapshot.pages.get(self.page_0 as usize))
             .is_some_and(|page| page.json.no_text_layer);
         let center = div()
+            .relative()
             .flex()
             .flex_col()
-            .flex_1()
+            .size_full()
             .min_w_0()
-            .h_full()
-            .overflow_hidden()
-            .children(scanned.then(|| {
-                div().p_2().bg(rgb(0x713f12)).child(format!(
-                    "Page {}: This page has no text. (Last explicit navigation)",
-                    page_0_to_1(self.page_0)
-                ))
-            }))
-            .children(self.selection.as_ref().map(|(selection, _)| {
-                div()
-                    .flex()
-                    .p_2()
-                    .gap_3()
-                    .child(format!("Selection · page {}", selection.page))
-                    .child(
-                        div()
-                            .id("ask-selection")
-                            .px_2()
-                            .bg(rgb(0x3f3f46))
-                            .text_color(rgb(if can_chat { 0xe4e4e7 } else { 0x71717a }))
-                            .when(can_chat, |button| {
-                                button
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(rgb(0x52525b)))
-                                    .active(|style| style.bg(rgb(0x71717a)))
-                                    .on_click(cx.listener(|this, _, _, cx| this.ask_selection(cx)))
-                            })
-                            .child("Ask"),
-                    )
-                    .child(
-                        div()
-                            .id("highlight-selection")
-                            .cursor_pointer()
-                            .px_2()
-                            .bg(rgb(0x3f3f46))
-                            .on_click(cx.listener(|this, _, _, cx| this.highlight_selection(cx)))
-                            .child("Highlight"),
-                    )
-            }));
+            .overflow_hidden();
         let center = match &self.pdf {
             Some(pdf) => center.child(
                 div()
@@ -827,88 +885,232 @@ impl Render for CompanionWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child("Open a PDF to start reading"),
+                .gap(spacing.md)
+                .p(spacing.lg)
+                .child(
+                    div()
+                        .text_size(typography.xl.size)
+                        .child("Your next chapter starts here"),
+                )
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Open a PDF to read, highlight and ask questions."),
+                )
+                .child(
+                    Button::new("empty-open-pdf")
+                        .primary()
+                        .icon(IconName::FolderOpen)
+                        .label("Open PDF…")
+                        .disabled(self.dialog_open || self.import.pending)
+                        .on_click(cx.listener(|this, _, window, cx| this.pick_pdf(window, cx))),
+                ),
         };
+        // All transient reader UI is absolute: selections and scans never change
+        // the viewer's available height or invalidate its page layout.
+        let center = center.child(
+            div()
+                .absolute()
+                .top(px(52.))
+                .left(spacing.md)
+                .right(spacing.md)
+                .flex()
+                .flex_col()
+                .gap(spacing.sm)
+                .children(scanned.then(|| {
+                    div()
+                        .p(spacing.sm)
+                        .rounded(radius)
+                        .bg(cx.theme().secondary)
+                        .text_color(cx.theme().secondary_foreground)
+                        .child(format!(
+                            "Page {} has no text. OCR is not available.",
+                            page_0_to_1(self.page_0)
+                        ))
+                }))
+                .children(self.selection.as_ref().map(|(selection, _)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(spacing.sm)
+                        .p(spacing.sm)
+                        .rounded(radius)
+                        .bg(cx.theme().popover)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .shadow_md()
+                        .flex_wrap()
+                        .child(format!("Selection · page {}", selection.page))
+                        .child(
+                            Button::new("ask-selection")
+                                .primary()
+                                .label("Ask")
+                                .disabled(!can_chat)
+                                .tooltip(
+                                    disabled_reason
+                                        .clone()
+                                        .unwrap_or_else(|| "Explain this passage".into()),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.ask_selection(cx))),
+                        )
+                        .child(
+                            Button::new("highlight-selection")
+                                .outline()
+                                .label("Highlight")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.highlight_selection(cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("dismiss-selection")
+                                .ghost()
+                                .label("Dismiss")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.selection = None;
+                                    cx.notify();
+                                })),
+                        )
+                })),
+        );
 
         div()
             .relative()
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 match event.keystroke.key.as_str() {
-                    "f" if event.keystroke.modifiers.control || event.keystroke.modifiers.platform => {
-                        if let Some(pdf) = &this.pdf { pdf.toggle_search(cx); }
+                    "f" if event.keystroke.modifiers.control
+                        || event.keystroke.modifiers.platform =>
+                    {
+                        if let Some(pdf) = &this.pdf {
+                            pdf.toggle_search(cx);
+                        }
                         cx.stop_propagation();
                     }
-                    "pagedown" => { this.navigate(true, cx); cx.stop_propagation(); }
-                    "pageup" => { this.navigate(false, cx); cx.stop_propagation(); }
-                    "escape" => { this.bridge.abort(); cx.notify(); cx.stop_propagation(); }
+                    "pagedown" => {
+                        this.navigate(true, cx);
+                        cx.stop_propagation();
+                    }
+                    "pageup" => {
+                        this.navigate(false, cx);
+                        cx.stop_propagation();
+                    }
+                    "escape" => {
+                        this.bridge.abort();
+                        cx.notify();
+                        cx.stop_propagation();
+                    }
                     _ => {}
                 }
             }))
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x18181b))
-            .text_color(rgb(0xe4e4e7))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .p_2()
+                    .gap(spacing.sm)
+                    .p(spacing.sm)
+                    .flex_shrink_0()
                     .border_b_1()
-                    .border_color(rgb(0x3f3f46))
+                    .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .id("open-pdf")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .bg(rgb(0x3f3f46))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| this.pick_pdf(window, cx)))
-                            .child(if self.dialog_open {
+                        Button::new("open-pdf")
+                            .outline()
+                            .icon(IconName::FolderOpen)
+                            .label(if self.dialog_open {
                                 "Choosing PDF…"
                             } else if self.import.pending {
                                 "Importing PDF…"
                             } else {
                                 "Open PDF…"
-                            }),
+                            })
+                            .disabled(self.dialog_open || self.import.pending)
+                            .on_click(cx.listener(|this, _, window, cx| this.pick_pdf(window, cx))),
                     )
-                    .child(div().id("previous-page").px_3().cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(false, cx)))
-                        .child("Previous"))
-                    .child(div().id("next-page").px_3().cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
-                        .child("Next"))
-                    .child(div().id("find-pdf").px_3().cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| { if let Some(pdf) = &this.pdf { pdf.toggle_search(cx); } }))
-                        .child("Find · ⌘/Ctrl F"))
-                    .child(format!("Last explicit page: {}", page_0_to_1(self.page_0))),
-            )
-            .children(self.error.clone().map(|error| div().p_2().text_color(rgb(0xfca5a5)).child(error)))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
                     .child(
-                        div().w(px(220.)).flex_shrink_0().child(self.render_sidebar(window, cx)),
-                    )
-                    .child(center)
-                    .child(div().w(px(360.)).h_full().flex_shrink_0().child(crate::chat::column(&self.bridge, self.composer.clone(), self.model_picker.clone(), &self.chat_scroll, self.key_setup_open,
-                        cx.listener(|this, _, _, cx| { this.key_setup_open = !this.key_setup_open; cx.notify(); }),
-                        cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); }),
-                        cx.listener(|this, _, _, cx| { this.bridge.submit("What did I just read?".into(), None); cx.notify(); }),
-                        navigate_quote, retry, cx))),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(
+                                self.document
+                                    .as_ref()
+                                    .map_or("Learning Companion".to_owned(), |doc| {
+                                        doc.title.clone()
+                                    }),
+                            ),
+                    ),
+            )
+            .child(
+                div().flex_1().min_h_0().child(
+                    h_resizable("reader-panes")
+                        .child(
+                            resizable_panel()
+                                .size(px(240.))
+                                .size_range(px(200.)..px(360.))
+                                .flex_none()
+                                .child(self.render_sidebar(window, cx)),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(280.)..gpui::Pixels::MAX)
+                                .child(center),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size(px(380.))
+                                .size_range(px(320.)..px(560.))
+                                .flex_none()
+                                .child(crate::chat::column(
+                                    &self.bridge,
+                                    self.composer.clone(),
+                                    self.model_picker.clone(),
+                                    &self.chat_scroll,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.bridge.toggle_follow();
+                                        cx.notify();
+                                    }),
+                                    cx.listener(|this, _, _, cx| {
+                                        this.bridge.submit("What did I just read?".into(), None);
+                                        cx.notify();
+                                    }),
+                                    navigate_quote,
+                                    retry,
+                                    cx,
+                                )),
+                        ),
+                ),
             )
             .children(self.password_open.then(|| {
-                div().absolute().inset_0().flex().items_center().justify_center()
-                    .bg(gpui::rgba(0x000000bb))
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(cx.theme().overlay)
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(div().w(px(480.)).p_4().rounded_md().bg(rgb(0x27272a))
-                        .child("Unlock PDF")
-                        .child(div().py_2().text_sm().child("Password required or incorrect. Kept in memory only."))
-                        .child(self.password_bar.clone()))
+                    .child(
+                        div()
+                            .w(px(480.))
+                            .p(spacing.md)
+                            .rounded(radius)
+                            .bg(cx.theme().popover)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child("Unlock PDF")
+                            .child(
+                                div()
+                                    .py(spacing.sm)
+                                    .text_size(typography.sm.size)
+                                    .child("Password required or incorrect. Kept in memory only."),
+                            )
+                            .child(self.password_bar.clone()),
+                    )
             }))
     }
 }

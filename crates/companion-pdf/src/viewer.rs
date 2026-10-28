@@ -1,9 +1,22 @@
-use std::{path::PathBuf, rc::Rc, sync::Arc};
+use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
 
 use crate::snapshot::DocSnapshot;
 
 use gpui::{App, AppContext, Entity, Window};
 use gpui_pdf::{PdfStyle, PdfView};
+
+/// Stable document-annotation colours, shared by new selections and restored
+/// persisted highlights. These are content colours, not application chrome.
+pub fn highlight_color(name: &str) -> gpui::Hsla {
+    gpui::rgb(match name {
+        "green" => 0x86efac,
+        "blue" => 0x93c5fd,
+        "pink" => 0xf9a8d4,
+        "purple" => 0xc4b5fd,
+        _ => 0xfde047,
+    })
+    .into()
+}
 
 /// One open viewer. The window owner must call `release` before replacing or closing it.
 ///
@@ -11,16 +24,40 @@ use gpui_pdf::{PdfStyle, PdfView};
 /// separately parsed snapshot (the accepted double parse in D6).
 pub struct CompanionPdf {
     inner: Entity<PdfView>,
+    style: Rc<Cell<PdfStyle>>,
     pub snapshot: Option<Arc<DocSnapshot>>,
 }
 
 impl CompanionPdf {
     pub fn open(path: PathBuf, cx: &mut App) -> Self {
-        let inner =
-            cx.new(|cx| PdfView::new(path, Rc::new(PdfStyle::default), Rc::new(|| 1.0), cx));
+        let style = Rc::new(Cell::new(PdfStyle::default()));
+        let current_style = style.clone();
+        let inner = cx.new(|cx| {
+            PdfView::new(
+                path,
+                Rc::new(move || current_style.get()),
+                Rc::new(|| 1.0),
+                cx,
+            )
+        });
         Self {
             inner,
+            style,
             snapshot: None,
+        }
+    }
+
+    /// Theme changes update chrome only, never page width, zoom or raster quality.
+    pub fn set_style(&self, style: PdfStyle, cx: &mut App) {
+        let previous = self.style.replace(style);
+        if previous.bg != style.bg
+            || previous.border != style.border
+            || previous.placeholder_bg != style.placeholder_bg
+            || previous.placeholder_fg != style.placeholder_fg
+            || previous.header_fg != style.header_fg
+            || previous.header_muted != style.header_muted
+        {
+            self.inner.update(cx, |_, cx| cx.notify());
         }
     }
 
@@ -28,16 +65,10 @@ impl CompanionPdf {
         self.inner.update(cx, |view, cx| {
             view.set_on_create_highlight(callback);
             view.set_highlight_palette(
-                [
-                    ("yellow", 0xfde047),
-                    ("green", 0x86efac),
-                    ("blue", 0x93c5fd),
-                    ("pink", 0xf9a8d4),
-                    ("purple", 0xc4b5fd),
-                ]
-                .into_iter()
-                .map(|(name, color)| (name.into(), gpui::Hsla::from(gpui::rgb(color))))
-                .collect(),
+                ["yellow", "green", "blue", "pink", "purple"]
+                    .into_iter()
+                    .map(|name| (name.into(), highlight_color(name)))
+                    .collect(),
                 cx,
             );
             // Dragging text produces a pending selection, not a durable highlight.

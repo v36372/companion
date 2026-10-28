@@ -83,6 +83,11 @@ impl DocSnapshot {
     ) -> Result<Self, gpui_pdf::LoadError> {
         let hayro = gpui_pdf::parse_with_password(bytes, password)?;
         meta.page_count = hayro.pages().len() as u32;
+        meta.title = crate::title::display_title(
+            hayro.metadata().title.as_deref(),
+            &meta.source_path,
+            &meta.title,
+        );
         let next = AtomicUsize::new(0);
         let slots = std::sync::Mutex::new((0..meta.page_count).map(|_| None).collect::<Vec<_>>());
         std::thread::scope(|scope| {
