@@ -22,6 +22,9 @@ use companion_pdf::{
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
 use gpui::{Context, Entity, FocusHandle, Window, div, prelude::*, px, rgb};
 
+#[path = "sidebar.rs"]
+mod sidebar;
+
 pub struct CompanionWindow {
     pdf: Option<CompanionPdf>,
     focus: FocusHandle,
@@ -767,9 +770,6 @@ impl Render for CompanionWindow {
         let scanned = snapshot
             .and_then(|snapshot| snapshot.pages.get(self.page_0 as usize))
             .is_some_and(|page| page.json.no_text_layer);
-        let outline = snapshot
-            .map(|snapshot| snapshot.outline.clone())
-            .unwrap_or_default();
         let center = div()
             .flex()
             .flex_col()
@@ -892,34 +892,7 @@ impl Render for CompanionWindow {
                     .flex_1()
                     .min_h_0()
                     .child(
-                        div()
-                            .w(px(220.))
-                            .flex_shrink_0()
-                            .h_full()
-                            .p_4()
-                            .border_r_1()
-                            .border_color(rgb(0x3f3f46))
-                            .id("recent-files")
-                            .overflow_y_scroll()
-                            .child("Outline")
-                            .children(outline.into_iter().enumerate().map(|(index, item)| {
-                                let row = div().id(gpui::SharedString::from(format!("outline-{index}"))).py_1()
-                                    .pl(px(item.level as f32 * 10.0)).child(item.title);
-                                if let Some(page_0) = item.page {
-                                    row.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-                                        this.goto_explicit(page_0 as u32, cx);
-                                    }))
-                                } else {
-                                    row.opacity(0.45).child(" (unavailable)")
-                                }
-                            }))
-                            .child(div().py_2().child("Recent"))
-                            .child(div().text_sm().py_2().child("Progress tracks app Previous/Next and Page Up/Down, not wheel scroll."))
-                            .children(self.recent.iter().cloned().map(|document| {
-                                div().id(gpui::SharedString::from(document.id.clone()))
-                                    .py_2().cursor_pointer().child(document.title.clone())
-                                    .on_click(cx.listener(move |this, _, window, cx| this.open_document(document.clone(), window, cx)))
-                            })),
+                        div().w(px(220.)).flex_shrink_0().child(self.render_sidebar(window, cx)),
                     )
                     .child(center)
                     .child(div().w(px(360.)).h_full().flex_shrink_0().child(crate::chat::column(&self.bridge, self.composer.clone(), self.model_picker.clone(), &self.chat_scroll, self.key_setup_open,
