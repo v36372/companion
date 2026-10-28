@@ -287,7 +287,7 @@ CI has two **independent Ubuntu 24.04 jobs** and a macOS consumer of the agent a
   WASI import artifact, Node local-provider mock, pinned Rust, agent/mock-feature
   Clippy (`-D warnings`), host component harness and headless bridge tests.
   It uploads the WASM and generated WIT description even on cache hits.
-- **macos:** Apple Silicon (`macos-14`), pinned Rust, a separate Rust cache,
+- **macos:** Apple Silicon (`macos-15`), pinned Rust, a separate Rust cache,
   locked release build and Clippy with `agent`. Downloads `agent-core` from the
   agent job without rebuilding JavaScript, then launches for 15 seconds with
   fresh data/cache directories, the tiny `hello.pdf` fixture and no keys.
