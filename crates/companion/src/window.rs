@@ -894,7 +894,7 @@ impl Render for CompanionWindow {
                     .flex_1()
                     .min_h_0()
                     .child(
-                        self.render_sidebar(cx),
+                        div().w(px(220.)).flex_shrink_0().child(self.render_sidebar(window, cx)),
                     )
                     .child(center)
                     .child(div().flex().flex_col().h_full().w(px(360.)).flex_shrink_0()
