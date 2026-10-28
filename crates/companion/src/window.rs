@@ -613,6 +613,10 @@ impl CompanionWindow {
 
 impl Render for CompanionWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.weak_entity();
+        let navigate_quote = move |page_0, _: &mut Window, cx: &mut gpui::App| {
+            let _ = weak.update(cx, |this, cx| this.goto_explicit(page_0, cx));
+        };
         let snapshot = self.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref());
         let scanned = snapshot
             .and_then(|snapshot| snapshot.pages.get(self.page_0 as usize))
@@ -748,7 +752,13 @@ impl Render for CompanionWindow {
                         .child(div().id("follow-mode").px_4().py_2().cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); }))
                             .child(if self.bridge.follow { "Follow: on" } else { "Follow: off" }))
-                        .child(div().flex_1().min_h_0().child(crate::chat::pane(&self.bridge, self.composer.clone(), &self.chat_scroll)))),
+                        .child(div().id("what-did-i-read").px_4().py_2().cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.bridge.submit("What did I just read?".into(), None);
+                                cx.notify();
+                            }))
+                            .child("What did I just read?"))
+                        .child(div().flex_1().min_h_0().child(crate::chat::pane(&self.bridge, self.composer.clone(), &self.chat_scroll, navigate_quote)))),
             )
     }
 }

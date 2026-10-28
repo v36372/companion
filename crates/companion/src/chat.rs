@@ -6,6 +6,7 @@ pub fn pane(
     bridge: &Bridge,
     composer: Entity<AskBar>,
     scroll: &gpui::ScrollHandle,
+    navigate: impl Fn(u32, &mut gpui::Window, &mut gpui::App) + Clone + 'static,
 ) -> impl IntoElement {
     div()
         .w(px(360.))
@@ -31,12 +32,25 @@ pub fn pane(
                 .min_h_0()
                 .overflow_y_scroll()
                 .track_scroll(scroll)
-                .children(
-                    bridge
-                        .transcript
-                        .iter()
-                        .map(|text| div().py_3().child(text.clone())),
-                )
+                .children(bridge.transcript.iter().enumerate().map(|(index, turn)| {
+                    let navigate = navigate.clone();
+                    div()
+                        .py_3()
+                        .children(turn.quote.as_ref().map(|quote| {
+                            let page_0 = quote.page - 1;
+                            div()
+                                .id(gpui::SharedString::from(format!("quote-{index}")))
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(rgb(0x3f3f46))
+                                .text_sm()
+                                .cursor_pointer()
+                                .child(quote.label())
+                                .on_click(move |_, window, cx| navigate(page_0, window, cx))
+                        }))
+                        .child(turn.text.clone())
+                }))
                 .children(bridge.notices.iter().map(|text| {
                     div()
                         .py_1()

@@ -130,13 +130,28 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
         bridge
             .transcript
             .iter()
-            .any(|s| s.contains("turn0-token11"))
+            .any(|s| s.text.contains("turn0-token11"))
     );
     assert!(
         bridge
             .transcript
             .iter()
-            .any(|s| s.contains("turn1-token11"))
+            .any(|s| s.text.contains("turn1-token11"))
+    );
+    assert_eq!(
+        bridge
+            .transcript
+            .iter()
+            .find_map(|s| s.quote.as_ref())
+            .unwrap()
+            .label(),
+        "p. 3 · “local quote”"
+    );
+    assert!(
+        bridge
+            .transcript
+            .iter()
+            .all(|s| !s.text.contains("---BEGIN"))
     );
     bridge.submit("cancel".into(), None);
     pump(&mut bridge, &events, |b| b.live.contains("turn2"));
@@ -154,6 +169,23 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
     assert_ne!(old, bridge.conversation);
     assert!(!bridge.running);
     assert!(bridge.notices.iter().any(|s| s.contains("abort completed")));
+    bridge.switch_document(attachment("A"));
+    pump(&mut bridge, &events, |b| b.conversation == old);
+    assert_eq!(
+        bridge
+            .transcript
+            .iter()
+            .find_map(|s| s.quote.as_ref())
+            .unwrap()
+            .label(),
+        "p. 3 · “local quote”"
+    );
+    assert!(
+        bridge
+            .transcript
+            .iter()
+            .all(|s| !s.text.contains("---BEGIN"))
+    );
     bridge.close();
     worker.join().unwrap();
     server.join().unwrap();

@@ -21,6 +21,24 @@ clipboard paste. While a turn is running, sends queue follow-ups with a UUIDv7
 requestId allocated once, at enqueue. Esc cancels the active turn and discards
 queued follow-ups. Follow can be toggled independently of submitting a question.
 
+The pane header's **Follow** toggle commits the conversation's durable FollowMode.
+When on, the next model request includes a bounded, delimited reading section:
+last explicit page, excerpt and selection. When off, that section is absent.
+The flag and `/doc/follow.json` are restored on reattach. **What did I just read?**
+is an ordinary canned submission, independent of the flag. Neither wheel scroll
+nor explicit page turns submit anything. `/doc/viewport.json` reports
+`source: "explicit_nav"`; wheel position is unknown. Existing explicit-navigation
+progress writes are coalesced for 500 ms, without Durable commits.
+
+Quoted user turns display a compact **p. N · “quote”** chip followed by the
+question, not the model's injection delimiters. Clicking the chip takes the
+tracked explicit-navigation path back to that page. New selected turns store
+page, quote, occurrence and question as a `companion.quote` entry's data,
+separately from its delimited model message, so reopening preserves the chip.
+PR8's older delimiter-only selected turns also render as chips on read, without
+rewriting their stored model messages. Delimiters are best-effort guidance, not
+a prompt-injection sandbox.
+
 The guest awaits `viewState()` and subscribes before submit. Structural commits
 carry transcript snapshots; on-stream carries replaceable pi.live snapshots.
 The UI awaits an async event channel (no token polling timer), so a local user

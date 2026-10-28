@@ -127,10 +127,15 @@ fn crash_checkpoint_resume_and_conversation_reattach() {
         id
     );
     guest.call_resume_wait(&mut store).unwrap().unwrap();
+    let mut commits = Vec::new();
     let chunks = resumed
         .try_iter()
         .filter_map(|event| match event {
             Event::Chunk { json, .. } => Some(json),
+            Event::Commit(json) => {
+                commits.push(json);
+                None
+            }
             Event::Report(json) => {
                 eprintln!("RESUME REPORT {json}");
                 None
@@ -139,8 +144,9 @@ fn crash_checkpoint_resume_and_conversation_reattach() {
         })
         .collect::<Vec<_>>();
     assert!(
-        chunks.iter().any(|json| json.contains("token15")),
-        "resume-wait must finish the checkpointed generation: {chunks:?}"
+        // Live snapshots may coalesce the final token into the committed reply.
+        !chunks.is_empty() && commits.iter().any(|json| json.contains("token15")),
+        "resume-wait must commit the finished checkpointed generation: {commits:?}"
     );
     // Exactly-once request id is retained through crash recovery: submitting it
     // again settles from storage without contacting a third HTTP server.

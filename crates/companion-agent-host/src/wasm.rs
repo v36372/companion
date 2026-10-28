@@ -173,6 +173,15 @@ impl companion::agent::host_events::Host for AgentHostState {
                 .is_some_and(|key| !key.trim().is_empty())
     }
     fn on_commit(&mut self, json: String) {
+        // Includes initial attachment: a reopened conversation's durable flag
+        // must replace the fresh virtual filesystem's default as well as the UI.
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json)
+            && let Some(enabled) = value["followEnabled"].as_bool()
+        {
+            self.fs
+                .follow
+                .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        }
         let _ = self.events.send(Event::Commit(json));
     }
     fn on_report(&mut self, json: String) {

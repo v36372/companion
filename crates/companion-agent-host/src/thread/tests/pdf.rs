@@ -53,6 +53,9 @@ fn component_pdf_tools_dispatch_commands_and_read_scans() {
             assert!(req.contains(name), "missing tool {name}");
         }
         assert!(!req.contains("\"name\":\"bash\""));
+        assert!(req.contains("BEGIN UNTRUSTED PDF TEXT"));
+        assert!(req.contains("explicit_nav"));
+        assert!(req.contains("wheel position unknown"));
         let calls=[("pdf_read_pages",json!({"start":1,"end":2})),("pdf_goto",json!({"page":1})),("pdf_highlight",json!({"page":1,"quote":"Companion","color":"yellow"}))].into_iter().enumerate().map(|(index,(name,args))|json!({"index":index,"id":format!("call-{index}"),"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>();
         stream(
             &mut socket,

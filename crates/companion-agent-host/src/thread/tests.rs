@@ -1,4 +1,5 @@
 mod durable;
+mod follow;
 mod pdf;
 mod websearch;
 
