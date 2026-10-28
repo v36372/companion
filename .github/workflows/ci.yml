@@ -33,6 +33,8 @@ jobs:
       - name: Check formatting
         if: hashFiles('Cargo.toml') != ''
         run: cargo fmt --all -- --check
+      - name: Test release smoke harness (mock platform, no display)
+        run: scripts/test-smoke-macos.sh
       - name: Build workspace
         if: hashFiles('Cargo.toml') != ''
         run: |
@@ -56,6 +58,42 @@ jobs:
           else
             echo "gpui-pre is not in the workspace dependency graph; skipping."
           fi
+
+  macos:
+    runs-on: macos-15
+    needs: agent
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      # agent-core contains paths rooted at the repo (WASM + agent/dist WIT).
+      # Reuse the Linux-generated portable component; never componentize on macOS.
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-core
+          path: .
+      - name: Verify agent component artifact
+        run: test -s crates/companion-agent-host/src/agent-core.wasm
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-release-agent
+          cache-on-failure: true
+      - name: Build release app with agent
+        run: cargo build --release -p companion --bin learning-companion --features agent --locked
+      - name: Lint macOS app with agent
+        run: cargo clippy -p companion --all-targets --features agent --locked -- -D warnings
+      - name: Smoke release app (no credentials or network)
+        run: scripts/smoke-macos.sh target/release/learning-companion "$RUNNER_TEMP/macos-smoke"
+      - name: Upload release smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-smoke
+          path: ${{ runner.temp }}/macos-smoke/
+          if-no-files-found: warn
 
   # Independent of rust/PDF: never add this job to rust.needs.
   agent:
