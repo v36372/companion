@@ -125,13 +125,14 @@ impl Render for AskBar {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .flex_wrap()
                     .gap_2()
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if self.secret || self.model_input {
+                            .child(if self.running {
+                                ""
+                            } else if self.secret || self.model_input {
                                 "Enter to confirm"
                             } else {
                                 "Shift+Enter for newline"
