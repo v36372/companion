@@ -7,6 +7,11 @@ on:
 
 env:
   CARGO_BUILD_JOBS: 1
+  # Match spike-sse.sh; avoid debug-info overhead and extra profile variants.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
 
 jobs:
   rust:
@@ -23,6 +28,8 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Check formatting
         if: hashFiles('Cargo.toml') != ''
         run: cargo fmt --all -- --check
@@ -60,6 +67,15 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: agent/package-lock.json
+      # Exact matches only: changing any guest/build/WIT input must componentize.
+      - name: Restore generated agent component
+        id: component
+        uses: actions/cache@v4
+        with:
+          path: |
+            crates/companion-agent-host/src/agent-core.wasm
+            agent/dist/agent-core.wit
+          key: agent-component-v1-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('agent/src/**', 'agent/*.mjs', 'agent/package*.json', 'agent/tsconfig*.json', 'wit/**') }}
       - run: npm ci
         working-directory: agent
       - name: Install keychain and document snapshot build dependencies
@@ -69,11 +85,17 @@ jobs:
             pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev libsqlite3-dev
-      - run: npm test && npm run typecheck && npm run build
+      - run: npm test && npm run typecheck
+        working-directory: agent
+      - name: Bundle agent
+        if: steps.component.outputs.cache-hit != 'true'
+        run: npm run build
         working-directory: agent
       - run: npm run componentize
+        if: steps.component.outputs.cache-hit != 'true'
         working-directory: agent
       - name: Record WASI imports
+        if: steps.component.outputs.cache-hit != 'true'
         run: npx jco wit ../crates/companion-agent-host/src/agent-core.wasm > dist/agent-core.wit
         working-directory: agent
       - uses: actions/upload-artifact@v4
@@ -90,6 +112,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: agent
+          cache-on-failure: true
       - name: Lint workspace with agent and mock-provider features
         run: cargo clippy --workspace --all-targets --locked --features companion/test-mock-provider -- -D warnings
       - name: Run component harness, PDF tools, host-auth, streaming and abort tests
