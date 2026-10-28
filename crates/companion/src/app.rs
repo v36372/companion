@@ -1,48 +1,68 @@
 use std::path::PathBuf;
 
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_component::{Root, Theme};
 
 use crate::window::CompanionWindow;
 
 pub fn run(path: Option<PathBuf>) {
-    gpui_platform::application().run(move |cx: &mut App| {
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-
-        let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    ..Default::default()
-                },
-                |window, cx| cx.new(|cx| CompanionWindow::new(path, window, cx)),
-            )
-            .expect("open Learning Companion window");
-
-        // App quit can bypass the native window-close request. Release while
-        // the window and its texture atlas are still available in either case.
-        // Retain the completion receiver independently of the native window:
-        // window-close may destroy its entity before on_app_quit runs.
-        let agent_shutdown = window
-            .update(cx, |view, _, _| view.agent_shutdown())
-            .ok()
-            .flatten();
-        cx.on_app_quit(move |cx| {
-            let _ = window.update(cx, |view, window, cx| view.close_pdf(window, cx));
-            let shutdown = agent_shutdown.clone();
-            async move {
-                if let Some(shutdown) = shutdown {
-                    let _ = shutdown.recv().await;
+    gpui_platform::application()
+        .with_assets(gpui_kit_assets::Assets)
+        .run(move |cx: &mut App| {
+            gpui_component::init(cx);
+            // Component Theme is the shared design-token source for subsequent UI
+            // migrations: ActiveTheme::theme().semantic_tokens() supplies spacing,
+            // typography and colours. Keep existing hand-rolled styles unchanged.
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
                 }
-            }
-        })
-        .detach();
-        cx.activate(true);
-        tracing::info!(target: "companion", "Learning Companion window opened");
-    });
+            })
+            .detach();
+
+            let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
+            let mut companion = None;
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        Theme::sync_system_appearance(Some(window), cx);
+                        window
+                            .observe_window_appearance(|window, cx| {
+                                Theme::sync_system_appearance(Some(window), cx);
+                            })
+                            .detach();
+                        let view = cx.new(|cx| CompanionWindow::new(path, window, cx));
+                        companion = Some(view.clone());
+                        // Do not add component client-side borders to the existing
+                        // native window. Root's default font/rem match GPUI's own.
+                        cx.new(|cx| Root::new(view, window, cx).bordered(false))
+                    },
+                )
+                .expect("open Learning Companion window");
+
+            // App quit can bypass the native window-close request. Release while
+            // the window and its texture atlas are still available in either case.
+            // Retain the completion receiver independently of the native window:
+            // window-close may destroy its entity before on_app_quit runs.
+            let companion = companion.expect("create Learning Companion view");
+            let agent_shutdown = companion.read(cx).agent_shutdown();
+            cx.on_app_quit(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    companion.update(cx, |view, cx| view.close_pdf(window, cx));
+                });
+                let shutdown = agent_shutdown.clone();
+                async move {
+                    if let Some(shutdown) = shutdown {
+                        let _ = shutdown.recv().await;
+                    }
+                }
+            })
+            .detach();
+            cx.activate(true);
+            tracing::info!(target: "companion", "Learning Companion window opened");
+        });
 }
