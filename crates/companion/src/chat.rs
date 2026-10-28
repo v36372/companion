@@ -23,8 +23,24 @@ pub fn pane(
         .child(
             div()
                 .text_sm()
-                .text_color(rgb(0xa1a1aa))
-                .child(bridge.status.clone()),
+                .text_color(rgb(if bridge.can_chat() {
+                    0xa1a1aa
+                } else {
+                    0xfcd34d
+                }))
+                .child(
+                    bridge
+                        .unavailable_reason()
+                        .unwrap_or_else(|| bridge.status.clone()),
+                ),
+        )
+        .children(
+            (!bridge.can_chat() && bridge.status.starts_with("Not sent:")).then(|| {
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xfca5a5))
+                    .child(bridge.status.clone())
+            }),
         )
         .child(
             div()
@@ -72,11 +88,25 @@ pub fn pane(
         .children(bridge.parked_task.map(|_| {
             div()
                 .id("retry-parked-task")
-                .cursor_pointer()
                 .p_2()
                 .bg(rgb(0x3f3f46))
-                .child("Retry parked task")
-                .on_click(move |_, window, cx| retry(window, cx))
+                .text_color(rgb(if bridge.can_retry() {
+                    0xe4e4e7
+                } else {
+                    0x71717a
+                }))
+                .child(if bridge.running {
+                    "Retry disabled while agent is running"
+                } else {
+                    "Retry parked task"
+                })
+                .when(bridge.can_retry(), |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(0x52525b)))
+                        .active(|style| style.bg(rgb(0x71717a)))
+                        .on_click(move |_, window, cx| retry(window, cx))
+                })
         }))
         .child(composer)
 }

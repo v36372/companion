@@ -129,7 +129,9 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
     let cancel = abort.clone();
     bridge.cancel = Arc::new(move || cancel.request());
     bridge.prepare = Arc::new(move || abort.reset());
-    pump(&mut bridge, &events, |b| b.available);
+    pump(&mut bridge, &events, |b| {
+        b.availability == Availability::Ready
+    });
     bridge.switch_document(attachment("A"));
     pump(&mut bridge, &events, |b| b.conversation.is_some());
     bridge.submit(
@@ -311,7 +313,9 @@ fn launch_reattaches_checkpoint_shows_resuming_and_finishes() {
     bridge.tx = Some(tx);
     bridge.cancel = Arc::new(move || cancel.request());
     bridge.prepare = Arc::new(move || prepare.reset());
-    pump(&mut bridge, &events, |b| b.available);
+    pump(&mut bridge, &events, |b| {
+        b.availability == Availability::Ready
+    });
     bridge.switch_document(attachment("A"));
     pump(&mut bridge, &events, |b| b.status.contains("Resuming"));
     assert!(bridge.running);

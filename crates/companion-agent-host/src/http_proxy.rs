@@ -230,9 +230,34 @@ fn public_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
+fn validate_addresses(
+    host: &str,
+    addresses: &[std::net::SocketAddr],
+    test_loopback: bool,
+) -> Result<(), ErrorCode> {
+    if !test_loopback
+        && addresses.iter().any(|address| {
+            let ip = match address.ip() {
+                std::net::IpAddr::V4(ip) => Some(ip),
+                std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped(),
+            };
+            ip.is_some_and(|ip| matches!(ip.octets(), [198, 18 | 19, _, _]))
+        })
+    {
+        return Err(ErrorCode::InternalError(Some(format!(
+            "Connection to {host} blocked: DNS resolved to 198.18.0.0/15, a special-purpose range typically used by fake-IP VPN/proxies (Surge, Clash). Exclude {host} (OpenRouter: openrouter.ai) from fake-IP mode or use real DNS, then retry. The public-IP security check remains enabled."
+        ))));
+    }
+    if addresses.is_empty() || (!test_loopback && addresses.iter().any(|a| !public_ip(a.ip()))) {
+        return Err(ErrorCode::HttpRequestDenied);
+    }
+    Ok(())
+}
+
 async fn pinned_request(
     mut request: hyper::Request<HyperOutgoingBody>,
     config: OutgoingRequestConfig,
+    events: crossbeam_channel::Sender<crate::wasm::Event>,
 ) -> Result<IncomingResponse, ErrorCode> {
     use hyper_util::rt::TokioIo;
     use tokio_rustls::rustls;
@@ -251,8 +276,18 @@ async fn pinned_request(
         .collect();
     let test_loopback =
         cfg!(any(test, feature = "test-mock-provider")) && !config.use_tls && host == "127.0.0.1";
-    if addresses.is_empty() || (!test_loopback && addresses.iter().any(|a| !public_ip(a.ip()))) {
-        return Err(ErrorCode::HttpRequestDenied);
+    if let Err(error) = validate_addresses(&host, &addresses, test_loopback) {
+        if let ErrorCode::InternalError(Some(message)) = &error {
+            // Fetch adapters may collapse WASI details into "Connection error".
+            // Also report the actionable diagnosis directly to the chat client.
+            let _ = events.send(crate::wasm::Event::Report(
+                serde_json::json!({
+                    "type": "connection_blocked", "message": message
+                })
+                .to_string(),
+            ));
+        }
+        return Err(error);
     }
     let tcp = tokio::time::timeout(
         config.connect_timeout,
@@ -343,6 +378,7 @@ impl WasiHttpView for AgentHostState {
             ))));
         }
         let secrets = self.secrets.clone();
+        let events = self.events.clone();
         #[cfg(any(test, feature = "test-mock-provider"))]
         let loopback_port = self.policy.loopback_port;
         config.connect_timeout = config.connect_timeout.min(timeout);
@@ -376,7 +412,7 @@ impl WasiHttpView for AgentHostState {
                     *request.uri_mut() = format!("http://127.0.0.1:{port}{path}").parse().unwrap();
                     config.use_tls = false;
                 }
-                pinned_request(request, config).await
+                pinned_request(request, config, events).await
             };
             let result = tokio::select! {
                 biased;
@@ -463,6 +499,41 @@ impl Body for BoundedBody {
 mod tests {
     use super::*;
     use std::task::{Wake, Waker};
+
+    #[test]
+    fn fake_ip_dns_error_is_actionable_without_weakening_policy() {
+        for ip in ["198.18.0.1", "198.19.255.254", "::ffff:198.18.0.1"] {
+            let address = std::net::SocketAddr::new(ip.parse().unwrap(), 443);
+            let error = validate_addresses("openrouter.ai", &[address], false).unwrap_err();
+            let ErrorCode::InternalError(Some(message)) = error else {
+                panic!("expected a diagnostic for {ip}");
+            };
+            for expected in [
+                "198.18.0.0/15",
+                "fake-IP",
+                "Surge",
+                "Clash",
+                "Exclude openrouter.ai",
+                "real DNS",
+            ] {
+                assert!(message.contains(expected), "{message}");
+            }
+            assert!(!public_ip(address.ip()));
+        }
+        for ip in ["127.0.0.1", "10.0.0.1", "198.51.100.1"] {
+            assert!(matches!(
+                validate_addresses(
+                    "openrouter.ai",
+                    &[std::net::SocketAddr::new(ip.parse().unwrap(), 443)],
+                    false
+                ),
+                Err(ErrorCode::HttpRequestDenied)
+            ));
+        }
+        assert!(
+            validate_addresses("openrouter.ai", &["8.8.8.8:443".parse().unwrap()], false).is_ok()
+        );
+    }
 
     #[test]
     fn policy_is_allowlisted_and_loopback_is_port_scoped() {

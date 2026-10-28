@@ -10,6 +10,7 @@ pub struct AskBar {
     pub text: String,
     pub secret: bool,
     pub model_input: bool,
+    pub disabled_reason: Option<String>,
 }
 impl AskBar {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -18,13 +19,14 @@ impl AskBar {
             text: String::new(),
             secret: false,
             model_input: false,
+            disabled_reason: None,
         }
     }
     pub fn focus(&self, window: &mut Window, cx: &mut gpui::App) {
         self.focus.focus(window, cx);
     }
     fn submit(&mut self, cx: &mut Context<Self>) {
-        if self.model_input || !self.text.trim().is_empty() {
+        if self.disabled_reason.is_none() && (self.model_input || !self.text.trim().is_empty()) {
             cx.emit(AskEvent::Submit(self.text.clone()));
         }
     }
@@ -32,6 +34,8 @@ impl AskBar {
 impl EventEmitter<AskEvent> for AskBar {}
 impl Render for AskBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_send =
+            self.disabled_reason.is_none() && (self.model_input || !self.text.trim().is_empty());
         div()
             .id("ask-composer")
             .track_focus(&self.focus)
@@ -85,9 +89,14 @@ impl Render for AskBar {
             .child(
                 div()
                     .id("send-question")
-                    .cursor_pointer()
                     .text_sm()
-                    .text_color(rgb(0x93c5fd))
+                    .text_color(rgb(if can_send { 0x93c5fd } else { 0x71717a }))
+                    .when(can_send, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(0x3f3f46)))
+                            .active(|style| style.bg(rgb(0x52525b)))
+                    })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.submit(cx);
                         cx.stop_propagation();
@@ -100,5 +109,11 @@ impl Render for AskBar {
                         "Send ↵ · Shift+Enter for newline"
                     }),
             )
+            .children(self.disabled_reason.as_ref().map(|_| {
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xa1a1aa))
+                    .child("Send disabled — see Agent status. You can keep typing.")
+            }))
     }
 }

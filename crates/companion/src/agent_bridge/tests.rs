@@ -35,6 +35,79 @@ fn submitted(rx: &crossbeam_channel::Receiver<Command>) -> Value {
     }
 }
 #[test]
+fn missing_empty_and_failed_key_lookups_are_distinct() {
+    for key in [None, Some(String::new()), Some("  ".into())] {
+        assert_eq!(Availability::from_key_lookup(Ok(key)), Availability::NoKey);
+    }
+    assert_eq!(
+        Availability::from_key_lookup(Ok(Some("test-only".into()))),
+        Availability::Starting
+    );
+    let state = Availability::from_key_lookup(Err(anyhow::anyhow!(
+        "Secret Service (D-Bus): unlock or set COMPANION_OPENROUTER_API_KEY"
+    )));
+    let Availability::KeyError(reason) = state else {
+        panic!("lookup failures must not look like missing keys");
+    };
+    assert!(reason.contains("Secret Service (D-Bus)"));
+    assert!(reason.contains("COMPANION_OPENROUTER_API_KEY"));
+}
+
+#[test]
+fn availability_explains_every_unready_transition() {
+    let mut bridge = Bridge::off();
+    assert!(!bridge.can_chat());
+    assert!(bridge.unavailable_reason().unwrap().contains("off"));
+    for availability in [
+        Availability::Starting,
+        Availability::NoKey,
+        Availability::KeyError("Secret Service locked; unlock it".into()),
+        Availability::Failed("Agent startup failed; restart".into()),
+    ] {
+        bridge.event(Event::Availability(availability.clone()));
+        assert_eq!(bridge.unavailable_reason(), availability.message());
+        assert!(!bridge.submit("preserve this question".into(), None));
+        assert!(bridge.status.starts_with("Not sent:"));
+        let follow = bridge.follow;
+        bridge.toggle_follow();
+        assert_eq!(bridge.follow, follow);
+        assert!(!bridge.can_retry());
+        assert_eq!(bridge.queued(), 0);
+    }
+    let (mut bridge, rx, _) = self::bridge();
+    bridge.conversation = None;
+    assert_eq!(
+        bridge.unavailable_reason().as_deref(),
+        Some("Open a PDF to chat.")
+    );
+    bridge.switch_document(attachment("A"));
+    assert!(matches!(rx.recv().unwrap(), Command::Attach(_)));
+    assert!(!bridge.can_chat());
+    assert!(bridge.unavailable_reason().unwrap().contains("Attaching"));
+    bridge.event(Event::Attached(10));
+    assert!(bridge.can_chat());
+    bridge.event(Event::Resuming);
+    assert!(bridge.can_chat(), "follow-ups can queue while resuming");
+    bridge.event(Event::Offline("Agent worker stopped; restart".into()));
+    assert!(!bridge.can_chat());
+    assert_eq!(
+        bridge.availability,
+        Availability::Failed("Agent worker stopped; restart".into())
+    );
+}
+
+#[test]
+fn disconnected_worker_rejects_send_explicitly() {
+    let (mut bridge, rx, _) = bridge();
+    drop(rx);
+    assert!(!bridge.submit("keep the draft".into(), None));
+    assert!(!bridge.can_chat());
+    assert!(bridge.status.contains("disconnected"));
+    assert!(!bridge.running);
+    assert_eq!(bridge.queued(), 0);
+}
+
+#[test]
 fn submit_stream_commit_and_uuid_v7() {
     let (mut bridge, rx, _) = bridge();
     assert!(bridge.submit(
@@ -125,7 +198,7 @@ fn document_switch_waits_for_abort_then_replaces_tree() {
 #[test]
 fn missing_key_does_not_submit_and_reports_survive_commit() {
     let (mut bridge, rx, _) = bridge();
-    bridge.available = false;
+    bridge.availability = Availability::NoKey;
     bridge.event(Event::Error(
         "OpenRouter key missing. Set COMPANION_OPENROUTER_API_KEY".into(),
     ));
