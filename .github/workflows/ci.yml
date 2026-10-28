@@ -165,8 +165,8 @@ jobs:
             '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-dev-unoptimised-v1
-          key: agent
+          # shared-key replaces key, so the agent needs its own namespace.
+          shared-key: ci-agent-dev-unoptimised-v1
           cache-on-failure: true
       - name: Lint workspace with agent and mock-provider features
         run: cargo clippy --workspace --all-targets --locked --features companion/test-mock-provider -- -D warnings
