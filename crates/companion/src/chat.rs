@@ -110,3 +110,50 @@ pub fn pane(
         }))
         .child(composer)
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn column(
+    bridge: &Bridge,
+    composer: Entity<AskBar>,
+    model_picker: Entity<crate::model_picker::ModelPicker>,
+    scroll: &gpui::ScrollHandle,
+    key_setup_open: bool,
+    setup: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    follow: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    ask: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    navigate: impl Fn(u32, &mut gpui::Window, &mut gpui::App) + Clone + 'static,
+    retry: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    let can_chat = bridge.can_chat();
+    div().flex().flex_col().h_full().w_full().flex_shrink_0()
+                        .child(div().id("key-setup").px_4().py_2().cursor_pointer()
+                            .text_color(rgb(0x93c5fd))
+                            .hover(|style| style.bg(rgb(0x3f3f46)))
+                            .active(|style| style.bg(rgb(0x52525b)))
+                            .on_click(setup)
+                            .child(if key_setup_open { "Hide key setup" } else { "Set up key" }))
+                        .children(key_setup_open.then(|| div().id("key-setup-instructions").max_h(px(220.)).overflow_y_scroll().px_4().py_2().text_sm()
+                            .child("OpenRouter key setup (restart after changes)")
+                            .child(div().py_2().child("Launch from a terminal with: COMPANION_OPENROUTER_API_KEY='<your-key>' /path/to/learning-companion your.pdf. This is a host-only fallback when keychain lookup fails, not an override. Never paste keys in chat. Shell commands containing keys may remain in history."))
+                            .child(div().py_2().child(if cfg!(target_os = "macos") {
+                                "Or save in macOS Keychain: security add-generic-password -U -s learning-companion -a openrouter -w '<your-key>'. Allow/unlock Keychain access if prompted. Unsigned rebuilds may prompt again."
+                            } else {
+                                "Or use an unlocked Linux Secret Service session: secret-tool store --label='Learning Companion OpenRouter' service learning-companion username openrouter target default. Enter the key at its prompt. Install libsecret-tools if secret-tool is missing."
+                            }))))
+                        .child(model_picker)
+                        .child(div().id("follow-mode").px_4().py_2()
+                            .text_color(rgb(if can_chat { 0xe4e4e7 } else { 0x71717a }))
+                            .when(can_chat, |button| button.cursor_pointer()
+                                .hover(|style| style.bg(rgb(0x3f3f46)))
+                                .active(|style| style.bg(rgb(0x52525b)))
+                                .on_click(follow))
+                            .child(if bridge.follow { "Follow: on" } else { "Follow: off" }))
+                        .child(div().id("what-did-i-read").px_4().py_2()
+                            .text_color(rgb(if can_chat { 0xe4e4e7 } else { 0x71717a }))
+                            .when(can_chat, |button| button.cursor_pointer()
+                                .hover(|style| style.bg(rgb(0x3f3f46)))
+                                .active(|style| style.bg(rgb(0x52525b)))
+                                .on_click(ask))
+                            .child("What did I just read?"))
+                        .child(div().flex_1().min_h_0().child(crate::chat::pane(bridge, composer, scroll, navigate, retry)))
+}

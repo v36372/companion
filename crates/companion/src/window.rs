@@ -924,44 +924,11 @@ impl Render for CompanionWindow {
                             })),
                     )
                     .child(center)
-                    .child(div().flex().flex_col().h_full().w(px(360.)).flex_shrink_0()
-                        .child(div().id("key-setup").px_4().py_2().cursor_pointer()
-                            .text_color(rgb(0x93c5fd))
-                            .hover(|style| style.bg(rgb(0x3f3f46)))
-                            .active(|style| style.bg(rgb(0x52525b)))
-                            .on_click(cx.listener(|this, _, _, cx| { this.key_setup_open = !this.key_setup_open; cx.notify(); }))
-                            .child(if self.key_setup_open { "Hide key setup" } else { "Set up key" }))
-                        .children(self.key_setup_open.then(|| div().id("key-setup-instructions").max_h(px(220.)).overflow_y_scroll().px_4().py_2().text_sm()
-                            .child("OpenRouter key setup (restart after changes)")
-                            .child(div().py_2().child("Launch from a terminal with: COMPANION_OPENROUTER_API_KEY='<your-key>' /path/to/learning-companion your.pdf. This is a host-only fallback when keychain lookup fails, not an override. Never paste keys in chat. Shell commands containing keys may remain in history."))
-                            .child(div().py_2().child(if cfg!(target_os = "macos") {
-                                "Or save in macOS Keychain: security add-generic-password -U -s learning-companion -a openrouter -w '<your-key>'. Allow/unlock Keychain access if prompted. Unsigned rebuilds may prompt again."
-                            } else {
-                                "Or use an unlocked Linux Secret Service session: secret-tool store --label='Learning Companion OpenRouter' service learning-companion username openrouter target default. Enter the key at its prompt. Install libsecret-tools if secret-tool is missing."
-                            }))))
-                        .child(self.model_picker.clone())
-                        .child(div().id("follow-mode").px_4().py_2()
-                            .text_color(rgb(if can_chat { 0xe4e4e7 } else { 0x71717a }))
-                            .when(can_chat, |button| button.cursor_pointer()
-                                .hover(|style| style.bg(rgb(0x3f3f46)))
-                                .active(|style| style.bg(rgb(0x52525b)))
-                                .on_click(cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); })))
-                            .child(if self.bridge.follow { "Follow: on" } else { "Follow: off" }))
-                        .child(div().id("what-did-i-read").px_4().py_2()
-                            .text_color(rgb(if can_chat { 0xe4e4e7 } else { 0x71717a }))
-                            .when(can_chat, |button| button.cursor_pointer()
-                                .hover(|style| style.bg(rgb(0x3f3f46)))
-                                .active(|style| style.bg(rgb(0x52525b)))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if !this.bridge.submit("What did I just read?".into(), None) {
-                                        // Rejection is visible in bridge.status.
-                                        cx.notify();
-                                        return;
-                                    }
-                                    cx.notify();
-                                })))
-                            .child("What did I just read?"))
-                        .child(div().flex_1().min_h_0().child(crate::chat::pane(&self.bridge, self.composer.clone(), &self.chat_scroll, navigate_quote, retry)))),
+                    .child(crate::chat::column(&self.bridge, self.composer.clone(), self.model_picker.clone(), &self.chat_scroll, self.key_setup_open,
+                        cx.listener(|this, _, _, cx| { this.key_setup_open = !this.key_setup_open; cx.notify(); }),
+                        cx.listener(|this, _, _, cx| { this.bridge.toggle_follow(); cx.notify(); }),
+                        cx.listener(|this, _, _, cx| { this.bridge.submit("What did I just read?".into(), None); cx.notify(); }),
+                        navigate_quote, retry)),
             )
             .children(self.password_open.then(|| {
                 div().absolute().inset_0().flex().items_center().justify_center()
