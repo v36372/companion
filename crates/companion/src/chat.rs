@@ -5,7 +5,7 @@ use crate::{
 };
 use gpui::{Entity, IntoElement, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariants},
     message::MessageAlignment,
@@ -17,7 +17,7 @@ use gpui_component::{
 };
 
 /// Follow a growing transcript only when the reader was already at its tail.
-/// Call before applying a stream update (the handle still describes the old layout).
+/// Call before the next layout (the handle still describes the old message sizes).
 pub fn follow_tail(scroll: &gpui::ScrollHandle) {
     if is_near_tail(
         f32::from(scroll.offset().y),
@@ -32,6 +32,27 @@ fn is_near_tail(offset: f32, maximum: f32) -> bool {
 
 fn is_user(speaker: &str) -> bool {
     matches!(speaker, "You" | "user")
+}
+
+fn editable_failed_question(bridge: &Bridge) -> Option<String> {
+    if bridge.running || bridge.parked_task.is_some() {
+        return None;
+    }
+    let failed = matches!(bridge.availability, Availability::Failed(_))
+        || bridge.notices.iter().any(|notice| {
+            notice.starts_with("session_failed:") || notice.starts_with("task_faulted:")
+        })
+        || bridge
+            .notices
+            .last()
+            .is_some_and(|notice| notice == &bridge.status);
+    if !failed {
+        return None;
+    }
+    bridge.transcript.iter().rev().find_map(|turn| {
+        let (speaker, question) = turn.text.split_once('\n')?;
+        (is_user(speaker) && !question.trim().is_empty()).then(|| question.to_owned())
+    })
 }
 
 fn status_label(bridge: &Bridge) -> &'static str {
@@ -226,6 +247,21 @@ pub fn pane(
                 }))
                 .on_click(move |_, window, cx| retry(window, cx))
         }))
+        .children(editable_failed_question(bridge).map(|question| {
+            let composer = composer.clone();
+            Button::new("edit-failed-question")
+                .ghost()
+                .small()
+                .label("Edit last question")
+                .tooltip("Replace the draft with your last question; this does not send it")
+                .on_click(move |_, window, cx| {
+                    composer.update(cx, |bar, cx| {
+                        bar.text = question.clone();
+                        bar.focus(window, cx);
+                        cx.notify();
+                    })
+                })
+        }))
         .child(composer)
 }
 
@@ -250,9 +286,13 @@ pub fn column(
         }
     });
     let can_chat = bridge.can_chat();
-    let reason = bridge
-        .unavailable_reason()
-        .unwrap_or_else(|| bridge.status.clone());
+    let reason = if bridge.status.starts_with("Not sent:") {
+        bridge.status.clone()
+    } else {
+        bridge
+            .unavailable_reason()
+            .unwrap_or_else(|| bridge.status.clone())
+    };
     div().flex().flex_col().h_full().w_full().min_w_0().bg(cx.theme().background).text_color(cx.theme().foreground)
         .child(div().flex().items_center().justify_between().px_3().pt_3().gap_2()
             .child(div().font_semibold().child("Companion"))
@@ -289,8 +329,28 @@ pub fn column(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_near_tail, is_user, status_label};
-    use crate::agent_bridge::{Availability, Bridge};
+    use super::{editable_failed_question, is_near_tail, is_user, status_label};
+    use crate::agent_bridge::{Availability, Bridge, TranscriptTurn};
+
+    #[test]
+    fn failed_turn_restores_draft_without_conflicting_with_parked_retry() {
+        let mut bridge = Bridge::off();
+        bridge.transcript.push(TranscriptTurn {
+            text: "You\nExplain this passage".into(),
+            quote: None,
+        });
+        assert!(editable_failed_question(&bridge).is_none());
+        bridge.notices.push("task_faulted: provider error".into());
+        assert_eq!(
+            editable_failed_question(&bridge).as_deref(),
+            Some("Explain this passage")
+        );
+        bridge.running = true;
+        assert!(editable_failed_question(&bridge).is_none());
+        bridge.running = false;
+        bridge.parked_task = Some(42);
+        assert!(editable_failed_question(&bridge).is_none());
+    }
 
     #[test]
     fn durable_display_roles_have_correct_alignment() {

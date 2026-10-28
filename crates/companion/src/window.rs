@@ -155,9 +155,7 @@ impl CompanionWindow {
                     if this
                         .update(cx, |this, cx| {
                             this.bridge.event(event);
-                            if this.bridge.running {
-                                this.chat_scroll.scroll_to_bottom();
-                            }
+                            crate::chat::follow_tail(&this.chat_scroll);
                             cx.notify();
                         })
                         .is_err()
