@@ -49,7 +49,7 @@ Each entry is wall-clock seconds, median of three runs.
 
 Before the agent fast path: `(cd agent && npm run build && npm run componentize)`;
 after: `scripts/build-agent.sh` following one successful rebuild. Raw before
-samples: 10.77/9.27/10.22; after: 0.01/0.00/0.00 (GNU time's 0.01 s resolution).
+samples: 10.77/9.27/10.22; final helper: 0.00/0.00/0.00 (GNU time's 0.01 s resolution).
 The helper's input invalidation, missing/empty artifact, forced rebuild and
 argument handling were also tested with a fake npm fixture.
 
@@ -64,14 +64,31 @@ samples: no-op 3.45/2.97/2.73 vs 9.11/2.11/0.64; leaf 2.71/2.55/3.71 vs
 vs 2.03/0.39/0.31. CI is the reference for dependency-build costs, not these
 contended local samples.
 
-CI job durations and cache-hit measurements are recorded in the PR body.
-The last-green main run before opening the PR was 40666979499 (79057c7), with
-both Clippy gates: rust **254 s**, agent **568 s**. Both Rust caches were exact
-hits (~939 MiB rust/~1686 MiB agent); restore took 25/54 s. Clippy took
-180/270 s; componentization took 7 s. The earlier starting baseline was
-40613554497 (e5e8239): rust 69 s, agent 324 s, but it predates Clippy and is
-not a like-for-like comparison. These are warm dependency builds, not clean
-build measurements; no local clean build was performed.
+CI job durations (seconds, from `gh run view <id> --json jobs`):
+
+| Run | rust | agent | Cache state |
+| --- | ---: | ---: | --- |
+| Before: main 79057c7, 40666979499 | 254 | 568 | Exact Rust hits; no component cache |
+| Final-main baseline: 4d76646, 40670302141 | 287 | 272 | Rust partial hit; agent exact hit |
+| First PR push, 40668541620 | 533 | 1209 | Both Rust caches and component miss |
+| Final-main rebase, 40671344155 | 412 | 258 | Rust miss; agent partial hit; component miss |
+
+The docs-only cache-hit run is recorded in the PR body. The first push populated
+new debug=0 caches: this is the one-off **clean CI dependency-build cost**, not
+an incremental speedup. The rebase changed guest sources and correctly missed
+the component cache (componentize 10 s); both Wasm and WIT were then saved. Its
+Rust job also switched runner images (20261012.334 to 20261025.353), changing the
+Rust cache environment key and forcing another cold build. Its agent job kept
+the old image and restored the prior dependency cache in 20 s.
+
+The original main caches were ~939 MiB rust/~1686 MiB agent (25/54 s restore),
+Clippy 180/270 s, componentize 7 s. Final-main's agent cache was ~1996 MiB;
+new final-main debug=0 archives are ~788 MiB rust/~1148 MiB agent. Final-main
+already includes the separate runtime component cache and model picker PRs;
+do not attribute their improvements to this workflow. Cache warmth and runner
+variation also affect total job times; this is not an isolated profile A/B.
+The earlier starting baseline 40613554497 predates Clippy and is not comparable.
+No local clean build was performed.
 
 ## Evaluated but not added
 
