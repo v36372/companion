@@ -14,6 +14,7 @@ pub struct ModelPicker {
     custom: bool,
     input: Entity<AskBar>,
     error: Option<String>,
+    pub disabled_reason: Option<String>,
 }
 
 impl ModelPicker {
@@ -43,10 +44,14 @@ impl ModelPicker {
             custom: false,
             input,
             error,
+            disabled_reason: None,
         }
     }
 
     fn save(&mut self, value: &str, cx: &mut Context<Self>) {
+        if self.disabled_reason.is_some() {
+            return;
+        }
         let result = self
             .hub
             .as_ref()
@@ -78,15 +83,26 @@ impl Render for ModelPicker {
             .child(
                 div()
                     .id("model-picker")
-                    .cursor_pointer()
-                    .text_color(rgb(0x93c5fd))
+                    .text_color(rgb(if self.disabled_reason.is_some() {
+                        0x71717a
+                    } else {
+                        0x93c5fd
+                    }))
+                    .when(self.disabled_reason.is_none(), |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(0x3f3f46)))
+                            .active(|style| style.bg(rgb(0x52525b)))
+                    })
                     .child(format!("Model: {label} ▾"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.open = !this.open;
+                        if this.disabled_reason.is_none() {
+                            this.open = !this.open;
+                        }
                         cx.notify();
                     })),
             )
-            .children(self.open.then(|| {
+            .children((self.open && self.disabled_reason.is_none()).then(|| {
                 div()
                     .mt_2()
                     .p_2()

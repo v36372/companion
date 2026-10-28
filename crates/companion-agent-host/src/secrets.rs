@@ -11,6 +11,28 @@ pub trait SecretStore: Send + Sync {
 /// Native keychain with a host-only env fallback for headless deployments.
 pub struct KeychainStore;
 impl KeychainStore {
+    fn lookup_error(provider: &str, error: &keyring::Error) -> String {
+        let store = if cfg!(target_os = "macos") {
+            "macOS Keychain"
+        } else if cfg!(target_os = "windows") {
+            "Windows Credential Manager"
+        } else {
+            "Secret Service (D-Bus)"
+        };
+        // Describe the category, never backend metadata or credential bytes.
+        let cause = match error {
+            keyring::Error::NoStorageAccess(_) => "access denied or store locked",
+            keyring::Error::BadEncoding(_) => "stored credential is not valid UTF-8",
+            keyring::Error::Ambiguous(_) => "multiple matching credentials",
+            keyring::Error::Invalid(_, _) => "invalid credential entry",
+            _ => "secure storage unavailable",
+        };
+        format!(
+            "{store} lookup for learning-companion/{provider} failed: {cause}. Unlock/allow access to the store (on Linux, start an unlocked Secret Service session), or set COMPANION_{}_API_KEY in the launching environment and restart. See Set up key for storage commands.",
+            provider.to_ascii_uppercase()
+        )
+    }
+
     fn entry(provider: &str) -> anyhow::Result<keyring::Entry> {
         anyhow::ensure!(PROVIDERS.contains(&provider), "unknown credential provider");
         Ok(keyring::Entry::new("learning-companion", provider)?)
@@ -18,8 +40,10 @@ impl KeychainStore {
 }
 impl SecretStore for KeychainStore {
     fn read(&self, provider: &str) -> anyhow::Result<Option<String>> {
-        let entry = Self::entry(provider)?;
-        match entry.get_password() {
+        anyhow::ensure!(PROVIDERS.contains(&provider), "unknown credential provider");
+        let result = keyring::Entry::new("learning-companion", provider)
+            .and_then(|entry| entry.get_password());
+        match result {
             Ok(value) => Ok(Some(value)),
             Err(error) => {
                 let name = format!("COMPANION_{}_API_KEY", provider.to_ascii_uppercase());
@@ -29,9 +53,7 @@ impl SecretStore for KeychainStore {
                 if matches!(error, keyring::Error::NoEntry) {
                     Ok(None)
                 } else {
-                    // No service is normal on headless Linux. Do not expose backend
-                    // diagnostics (which may contain identifying keychain metadata).
-                    anyhow::bail!("keychain unavailable and no host credential fallback")
+                    anyhow::bail!(Self::lookup_error(provider, &error))
                 }
             }
         }
@@ -68,6 +90,17 @@ impl SecretStore for MemorySecretStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keychain_diagnostic_names_store_and_remedy_without_metadata() {
+        let error = keyring::Error::BadEncoding(b"private credential bytes".to_vec());
+        let message = KeychainStore::lookup_error("openrouter", &error);
+        assert!(message.contains("learning-companion/openrouter"));
+        assert!(message.contains("COMPANION_OPENROUTER_API_KEY"));
+        assert!(message.contains("restart"));
+        assert!(message.contains("not valid UTF-8"));
+        assert!(!message.contains("private credential bytes"));
+    }
+
     #[test]
     fn memory_store_is_explicit_and_deletable() {
         let store = MemorySecretStore::default();

@@ -20,6 +20,11 @@ pub fn pane(
         .border_l_1()
         .border_color(rgb(0x3f3f46))
         .child("Agent")
+        .children(
+            bridge
+                .unavailable_reason()
+                .map(|reason| div().text_sm().text_color(rgb(0xfcd34d)).child(reason)),
+        )
         .child(
             div()
                 .text_sm()
@@ -72,11 +77,25 @@ pub fn pane(
         .children(bridge.parked_task.map(|_| {
             div()
                 .id("retry-parked-task")
-                .cursor_pointer()
                 .p_2()
                 .bg(rgb(0x3f3f46))
-                .child("Retry parked task")
-                .on_click(move |_, window, cx| retry(window, cx))
+                .text_color(rgb(if bridge.can_retry() {
+                    0xe4e4e7
+                } else {
+                    0x71717a
+                }))
+                .child(if bridge.running {
+                    "Retry disabled while agent is running"
+                } else {
+                    "Retry parked task"
+                })
+                .when(bridge.can_retry(), |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(0x52525b)))
+                        .active(|style| style.bg(rgb(0x71717a)))
+                        .on_click(move |_, window, cx| retry(window, cx))
+                })
         }))
         .child(composer)
 }

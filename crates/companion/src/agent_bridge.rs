@@ -25,7 +25,42 @@ pub enum Command {
     Close,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Off,
+    NoKey,
+    KeyError(String),
+    Starting,
+    Ready,
+    Failed(String),
+}
+
+impl Availability {
+    #[cfg(any(test, feature = "agent"))]
+    fn from_key_lookup(result: anyhow::Result<Option<String>>) -> Self {
+        match result {
+            Ok(Some(key)) if !key.trim().is_empty() => Self::Starting,
+            Ok(_) => Self::NoKey,
+            Err(error) => Self::KeyError(format!("OpenRouter credential lookup failed: {error:#}")),
+        }
+    }
+
+    pub fn message(&self) -> Option<String> {
+        match self {
+            Self::Off => Some(
+                "Agent is off. Build with --features agent and launch with COMPANION_AGENT=wasm."
+                    .into(),
+            ),
+            Self::NoKey => Some("Add an OpenRouter key to chat.".into()),
+            Self::KeyError(reason) | Self::Failed(reason) => Some(reason.clone()),
+            Self::Starting => Some("Agent starting… First launch can take over a minute.".into()),
+            Self::Ready => None,
+        }
+    }
+}
+
 pub enum Event {
+    Availability(Availability),
     Ready,
     Attached(i64),
     Commit(Value),
@@ -68,7 +103,7 @@ pub struct Bridge {
     shutdown: Option<async_channel::Receiver<()>>,
     cancel: Arc<dyn Fn() + Send + Sync>,
     prepare: Arc<dyn Fn() + Send + Sync>,
-    pub available: bool,
+    pub availability: Availability,
     pub conversation: Option<i64>,
     pub running: bool,
     attaching: bool,
@@ -91,7 +126,7 @@ impl Bridge {
             shutdown: None,
             cancel: Arc::new(|| {}),
             prepare: Arc::new(|| {}),
-            available: false,
+            availability: Availability::Off,
             conversation: None,
             running: false,
             attaching: false,
@@ -112,8 +147,15 @@ impl Bridge {
     #[cfg(feature = "agent")]
     pub fn start(hub: Arc<companion_store::SqliteHub>) -> (Self, async_channel::Receiver<Event>) {
         let (events, rx) = async_channel::unbounded();
-        if !companion_agent_host::agent_enabled().unwrap_or(false) {
-            return (Self::off(), rx);
+        match companion_agent_host::agent_enabled() {
+            Ok(true) => {}
+            Ok(false) => return (Self::off(), rx),
+            Err(error) => {
+                let mut bridge = Self::off();
+                bridge.status = error.to_string();
+                bridge.availability = Availability::Failed(bridge.status.clone());
+                return (bridge, rx);
+            }
         }
         let abort = companion_agent_host::http_proxy::Abort::default();
         let (tx, commands) = crossbeam_channel::unbounded();
@@ -134,6 +176,7 @@ impl Bridge {
         bridge.shutdown = Some(shutdown);
         bridge.cancel = Arc::new(move || cancel.request());
         bridge.prepare = Arc::new(move || prepare.reset());
+        bridge.availability = Availability::Starting;
         bridge.status = "Starting agent…".into();
         (bridge, rx)
     }
@@ -155,18 +198,54 @@ impl Bridge {
         self.advance();
     }
 
+    /// Shared reason for every agent-dependent control. Typing stays enabled.
+    pub fn unavailable_reason(&self) -> Option<String> {
+        self.availability.message().or_else(|| {
+            if self.attaching {
+                Some("Attaching document…".into())
+            } else if self.switching || self.pending_document.is_some() {
+                Some("Preparing document… Unlock the PDF if prompted.".into())
+            } else if self.conversation.is_none() {
+                Some("Open a PDF to chat.".into())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn can_chat(&self) -> bool {
+        self.unavailable_reason().is_none()
+    }
+
+    pub fn can_retry(&self) -> bool {
+        self.can_chat() && !self.running && self.parked_task.is_some()
+    }
+
     pub fn submit(&mut self, content: String, selection: Option<Value>) -> bool {
-        if !self.available
-            || content.trim().is_empty()
-            || (self.conversation.is_none() && !self.attaching)
-        {
+        if let Some(reason) = self.unavailable_reason() {
+            self.status = format!("Not sent: {reason}");
+            return false;
+        }
+        if content.trim().is_empty() {
+            self.status = "Not sent: type a question first.".into();
             return false;
         }
         // Allocate once at enqueue time, not when retried/dequeued.
         self.queue
             .push_back((content, selection, uuid::Uuid::now_v7().to_string()));
         self.advance();
-        true
+        self.availability == Availability::Ready
+    }
+
+    fn dispatch(&mut self, command: Command) -> bool {
+        if self.tx.as_ref().is_some_and(|tx| tx.send(command).is_ok()) {
+            true
+        } else {
+            self.event(Event::Offline(
+                "Agent worker disconnected. Restart the app to chat.".into(),
+            ));
+            false
+        }
     }
 
     pub fn abort(&mut self) {
@@ -190,43 +269,45 @@ impl Bridge {
     }
 
     pub fn retry_parked(&mut self) {
-        if self.running || self.attaching || self.switching {
+        if !self.can_retry() {
             return;
         }
-        if let (Some(task_id), Some(tx)) = (self.parked_task.take(), &self.tx) {
+        if let Some(task_id) = self.parked_task.take() {
             if let Some(id) = self.conversation {
                 self.parked_by_conversation.remove(&id);
             }
             (self.prepare)();
             self.running = true;
             self.status = "Retrying…".into();
-            let _ = tx.send(Command::Retry { task_id });
+            self.dispatch(Command::Retry { task_id });
         }
     }
 
     pub fn toggle_follow(&mut self) {
-        if let (Some(id), Some(tx)) = (self.conversation, &self.tx) {
-            self.follow = !self.follow;
-            let _ = tx.send(Command::Follow {
+        if !self.can_chat() {
+            return;
+        }
+        if let Some(id) = self.conversation {
+            let enabled = !self.follow;
+            if self.dispatch(Command::Follow {
                 conversation_id: id,
-                enabled: self.follow,
-            });
+                enabled,
+            }) {
+                self.follow = enabled;
+            }
         }
     }
 
     fn advance(&mut self) {
-        if self.running || self.attaching || !self.available {
+        if self.running || self.attaching || self.availability != Availability::Ready {
             return;
         }
-        let Some(tx) = &self.tx else {
-            return;
-        };
         if let Some(doc) = self.pending_document.take() {
             (self.prepare)();
             self.attaching = true;
             self.switching = false;
             self.status = "Attaching document…".into();
-            let _ = tx.send(Command::Attach(doc));
+            self.dispatch(Command::Attach(doc));
         } else if let (Some(id), Some((content, selection, request))) =
             (self.conversation, self.queue.pop_front())
         {
@@ -235,7 +316,7 @@ impl Bridge {
             self.running = true;
             self.live.clear();
             self.status = "Running · Esc to stop".into();
-            let _ = tx.send(Command::Submit {
+            self.dispatch(Command::Submit {
                 conversation_id: id,
                 json: req.to_string(),
             });
@@ -244,8 +325,12 @@ impl Bridge {
 
     pub fn event(&mut self, event: Event) {
         match event {
+            Event::Availability(availability) => {
+                self.status = availability.message().unwrap_or_default();
+                self.availability = availability;
+            }
             Event::Ready => {
-                self.available = true;
+                self.availability = Availability::Ready;
                 self.status = "Open a PDF, then ask a question.".into();
             }
             Event::Attached(id) => {
@@ -317,7 +402,7 @@ impl Bridge {
                 }
             }
             Event::Offline(message) => {
-                self.available = false;
+                self.availability = Availability::Failed(message.clone());
                 self.running = false;
                 self.attaching = false;
                 self.queue.clear();
@@ -474,15 +559,10 @@ fn run(
         memory.write("brave", "host-brave-test-key")?;
         secrets = Arc::new(memory);
     }
-    if secrets
-        .read("openrouter")
-        .ok()
-        .flatten()
-        .is_none_or(|key| key.trim().is_empty())
-    {
-        anyhow::bail!(
-            "OpenRouter key missing. Set COMPANION_OPENROUTER_API_KEY before launching, or save an openrouter key in the learning-companion keychain."
-        );
+    let availability = Availability::from_key_lookup(secrets.read("openrouter"));
+    if availability != Availability::Starting {
+        let _ = events.send_blocking(Event::Availability(availability));
+        return Ok(());
     }
     let runtime = wasm::Runtime::load()?;
     run_with(hub, runtime, abort, policy, secrets, commands, events)

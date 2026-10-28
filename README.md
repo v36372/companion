@@ -121,6 +121,18 @@ host-only fallbacks **when keychain lookup fails**, not overrides of an existing
 keychain value (even an empty one). Restart after changing credentials. Tests use
 explicit in-memory stores and never read native keys.
 
+The chat pane's **Set up key** action shows the environment/keychain commands.
+Missing keys, key-store failures, startup, document preparation and disabled-agent
+builds have explicit status messages. Send, Ask, Follow, canned questions and Model
+are dimmed while unavailable; the composer remains editable and keeps your draft.
+On macOS, unsigned rebuilds may require Keychain approval again; macOS behavior
+remains unverified.
+
+If sending reports a DNS address in **198.18.0.0/15**, a fake-IP VPN/proxy such as
+Surge or Clash is likely intercepting DNS. Exclude **openrouter.ai** from fake-IP
+mode or use real DNS, then retry. The host deliberately still refuses connections
+to this special-purpose address range; it does not bypass public-IP protections.
+
 ### Model selection
 
 Click **Model** above the chat pane to choose Claude Haiku (the default), Claude
