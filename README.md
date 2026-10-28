@@ -215,6 +215,8 @@ on Linux, `$XDG_DATA_HOME/learning-companion` or
 | --- | --- |
 | `COMPANION_AGENT` | `wasm` (default) or `off`; other values are errors. WASM still requires the `agent` feature. |
 | `COMPANION_DATA_DIR` | Override the data root, useful for isolated/headless runs. |
+| `COMPANION_CACHE_DIR` | Override the OS app cache root (separate from data). Compiled agent artifacts live in `components/`. |
+| `COMPANION_COMPONENT_CACHE` | `off` disables persistent component caching; otherwise enabled on Unix. |
 | `COMPANION_OPENROUTER_API_KEY` | Host keychain fallback for OpenRouter. |
 | `COMPANION_BRAVE_API_KEY` | Host keychain fallback for optional Brave Search. |
 | `COMPANION_OPENAI_API_KEY`, `COMPANION_ANTHROPIC_API_KEY`, `COMPANION_GOOGLE_API_KEY` | Additional host SecretStore fallbacks; not a desktop provider/model switch. |
@@ -280,9 +282,11 @@ requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
 - Scans have no OCR. Progress, Follow and the scanned-page banner describe
   explicit navigation, not the live scroll viewport. Upstream accessors/events
   are still missing; the upstream issue was drafted, not posted.
-- Uncached component compilation was measured at roughly **70–80 seconds** on
-  the small build VM. The runtime reuses a compiled component in-process but has
-  no persistent precompile/cache; quick instantiation is not quick cold startup.
+- The first agent launch still compiles the component (roughly **70–80 seconds**
+  on the small build VM). Subsequent Unix launches use a private on-disk native
+  component cache, keyed by Wasm content and engine compatibility; invalid or
+  unwritable caches fall back to compilation. Other platforms currently compile
+  without caching. See [cache details and measurements](docs/component-cache.md).
 - The pinned ComponentizeJS/weval build-tool chain has a reported **critical npm
   audit archive-extraction advisory** (`decompress`), plus moderate build-time
   advisories. Do not use it to process untrusted archives.
@@ -323,7 +327,8 @@ features from intermediate PRs:
   from delimited model input. The minimal GPUI chat uses structural commits plus
   on-stream snapshots, with explicit queue/cancellation/recovery states.
 - Cold component compilation misses the intended startup target; persistent
-  precompilation/caching and live-provider validation remain follow-ups.
+  component caching speeds subsequent launches. Live-provider validation remains
+  a follow-up.
 
 ## Repository layout
 

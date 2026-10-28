@@ -9,10 +9,15 @@ publish.workspace = true
 default = []
 # Explicit opt-in for headless local mock smoke tests; absent from shipping builds.
 test-mock-provider = ["agent"]
-agent = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wasmtime-wasi-http", "dep:bytes", "dep:http-body", "dep:http-body-util", "dep:hyper", "dep:tokio", "dep:hyper-util", "dep:tokio-rustls", "dep:webpki-roots"]
+agent = ["dep:sha2", "dep:hex", "dep:directories", "dep:tempfile", "dep:libc", "dep:wasmtime", "dep:wasmtime-wasi", "dep:wasmtime-wasi-http", "dep:bytes", "dep:http-body", "dep:http-body-util", "dep:hyper", "dep:tokio", "dep:hyper-util", "dep:tokio-rustls", "dep:webpki-roots"]
 
 [dependencies]
 anyhow.workspace = true
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+directories = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
+libc = { version = "0.2", optional = true }
 companion-store = { path = "../companion-store" }
 companion-env = { path = "../companion-env" }
 rusqlite.workspace = true

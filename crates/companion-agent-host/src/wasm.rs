@@ -132,7 +132,11 @@ impl Runtime {
         anyhow::ensure!(crate::agent_enabled()?, "agent is disabled");
         let engine = engine()?;
         let start = Instant::now();
-        let component = Component::from_binary(&engine, include_bytes!("agent-core.wasm"))?;
+        let component = component_cache::load(
+            &engine,
+            include_bytes!("agent-core.wasm"),
+            component_cache::configured_dir().as_deref(),
+        )?;
         Ok(Self {
             engine,
             component,
@@ -195,7 +199,10 @@ impl companion::agent::host_events::Host for AgentHostState {
     }
 }
 
+mod component_cache;
 mod env;
+#[cfg(test)]
+mod measurement;
 mod sqlite;
 #[cfg(test)]
 mod sqlite_tests;

@@ -33,7 +33,12 @@ Default workspace builds/tests need neither Node nor the generated Wasm. The
 by git). `build.rs` reports how to create it when missing. The independent CI
 agent job componentizes and runs all host tests. Tests compile the component
 **once per test binary** using OnceLock, then create fresh Stores for each case.
-Uncached component compilation is expensive; see the PR4 evidence for timings.
+Uncached component compilation is expensive. The shared `Runtime::load` path now
+uses the persistent compiled-component cache on Unix, including in these tests.
+Set `COMPANION_CACHE_DIR` to a private test directory to isolate test artifacts;
+set `COMPANION_COMPONENT_CACHE=off` to exercise real compilation. Focused cache
+unit tests use temporary directories and tiny components, and cover the uncached
+path too. See [cache details and measurements](../docs/component-cache.md).
 
 The local mock test goes through the actual Wasm Harness, catalog-selected
 OpenRouter provider, fetch, host SecretStore overwrite and streaming response.
