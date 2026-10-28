@@ -33,6 +33,9 @@ pub enum HostToGuest {
         conversation_id: i64,
     },
     ResumeWait,
+    RetryTask {
+        task_id: i64,
+    },
     SetFollow {
         conversation_id: i64,
         enabled: bool,
@@ -91,10 +94,12 @@ pub fn spawn_with_secrets(
             };
             let (mut store, mut guest) = wasm::instantiate(&runtime, state())?;
             let mut last_open = None;
+            let mut attached_conversation = None;
             while let Ok(command) = commands.recv() {
                 let prepared = matches!(command, Command::SubmitPrepared { .. });
                 let mut conversation_id = None;
                 let mut submit = false;
+                let mut cancellable = false;
                 let result = match command {
                     Command::SetDocument { fs, pdf_tx } => {
                         store.data_mut().fs = fs;
@@ -110,6 +115,10 @@ pub fn spawn_with_secrets(
                     Command::OpenDocument { req_json } => {
                         guest.call_open_document(&mut store, &req_json).map(|r| {
                             r.inspect(|json| {
+                                attached_conversation =
+                                    serde_json::from_str::<serde_json::Value>(json)
+                                        .ok()
+                                        .and_then(|v| v["conversationId"].as_i64());
                                 let _ = events.send(Event::OpenDocumentDone(json.clone()));
                             })
                         })
@@ -137,9 +146,20 @@ pub fn spawn_with_secrets(
                             String::new()
                         })
                     }),
-                    Command::ResumeWait => guest
-                        .call_resume_wait(&mut store)
-                        .map(|r| r.map(|_| String::new())),
+                    Command::ResumeWait => {
+                        conversation_id = attached_conversation;
+                        cancellable = attached_conversation.is_some();
+                        guest
+                            .call_resume_wait(&mut store)
+                            .map(|r| r.map(|_| String::new()))
+                    }
+                    Command::RetryTask { task_id } => {
+                        conversation_id = attached_conversation;
+                        cancellable = attached_conversation.is_some();
+                        guest
+                            .call_retry_task(&mut store, task_id)
+                            .map(|r| r.map(|_| String::new()))
+                    }
                     Command::SetFollow {
                         conversation_id,
                         enabled,
@@ -172,7 +192,7 @@ pub fn spawn_with_secrets(
                     Ok(result) => {
                         // A rejected fetch is a failed run, not a Durable abort.
                         // Only call the abort export once submit is off-stack.
-                        if submit && abort.requested() {
+                        if (submit || cancellable) && abort.requested() {
                             let id = conversation_id.unwrap();
                             guest
                                 .call_abort(&mut store, id)?

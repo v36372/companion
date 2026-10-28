@@ -10,6 +10,7 @@ export const open = lower(impl.open);
 export const openDocument = lower(impl.openDocument);
 export const submit = lower(impl.submit);
 export const resumeWait = lower(impl.resumeWait);
+export const retryTask = lower(async (id: bigint) => impl.retryTask(Number(id)));
 // WIT s64 arrives as bigint; Durable's branded ids are safe JS numbers.
 export const abort = lower(async (id: bigint) => impl.abort(Number(id)));
 export const configure = lower(async (id: bigint, json: string) => impl.configure(Number(id), json));

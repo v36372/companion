@@ -9,6 +9,7 @@ import {
   Harness,
   type Conversation,
   type ConversationId,
+  type TaskId,
   type AgentChange as DurableAgentChange,
 } from "@earendil-works/pi-durable";
 
@@ -131,7 +132,20 @@ export async function openDocument(reqJson: string): Promise<string> {
       req.documentId, conv.id);
   }
   await attachView(conv);
-  const res: OpenDocumentRes = { conversationId: conv.id };
+  const inspection = await harness.inspect(BACKGROUND_CONTEXT);
+  // Already parked tasks need an actionable report on reattach too, not only
+  // at the original restart-limit transition (which may precede a crash).
+  for (const task of inspection.tasks) {
+    if (task.record.conversationId === conv.id && task.state.kind === 'blocked'
+      && task.state.reason === 'restart_limit') {
+      hostEvents.onReport(JSON.stringify({ type: 'task_parked',
+        message: 'Restart limit reached. Retry to continue.',
+        task: { id: task.record.id, conversationId: conv.id } }));
+    }
+  }
+  const resumable = inspection.tasks.some(task => task.record.conversationId === conv.id
+    && task.state.kind !== 'blocked');
+  const res: OpenDocumentRes = { conversationId: conv.id, resumable };
   return JSON.stringify(res);
 }
 
@@ -161,6 +175,12 @@ export async function submit(reqJson: string): Promise<string> {
     status: settled.status === "done" ? "done" : "unanswered",
   };
   return JSON.stringify(res);
+}
+
+export async function retryTask(taskId: number): Promise<void> {
+  if (!Number.isSafeInteger(taskId) || taskId <= 0) throw new Error('invalid task id');
+  await harness!.retryTask(taskId as TaskId, BACKGROUND_CONTEXT);
+  await resumeWait();
 }
 
 /** After submit returns, or after trap + new instance. Not concurrent with submit. */

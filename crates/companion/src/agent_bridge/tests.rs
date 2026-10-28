@@ -208,3 +208,51 @@ fn follow_changes_and_viewport_updates_never_submit() {
 
 #[cfg(feature = "test-mock-provider")]
 mod mock;
+
+#[test]
+fn resuming_holds_queue_and_parked_retry_is_scoped() {
+    let (mut bridge, rx, cancelled) = bridge();
+    bridge.event(Event::Resuming);
+    assert!(bridge.running);
+    assert!(bridge.status.contains("Resuming"));
+    bridge.submit("after recovery".into(), None);
+    assert!(rx.try_recv().is_err());
+    bridge.abort();
+    assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+    assert_eq!(bridge.queued(), 0);
+    bridge.event(Event::Settled);
+    for kind in ["session_failed", "task_faulted", "task_parked"] {
+        bridge.event(Event::Report(
+            json!({"type":kind,"message":"interrupted", "task":{"id":7,"conversationId":10}})
+                .to_string(),
+        ));
+    }
+    assert_eq!(bridge.parked_task, Some(7));
+    bridge.event(Event::Report(
+        json!({"type":"task_parked","task":{"id":9,"conversationId":20}}).to_string(),
+    ));
+    assert_eq!(bridge.parked_task, Some(7));
+    bridge.retry_parked();
+    assert!(matches!(rx.recv().unwrap(), Command::Retry { task_id: 7 }));
+    assert!(bridge.running);
+    bridge.retry_parked();
+    assert!(rx.try_recv().is_err());
+    bridge.event(Event::Settled);
+    assert_eq!(bridge.notices.len(), 4);
+    bridge.begin_switch();
+    assert_eq!(bridge.parked_task, None);
+}
+
+#[test]
+fn parked_report_before_attachment_keeps_retry_target() {
+    let (mut bridge, rx, _) = bridge();
+    bridge.begin_switch();
+    bridge.event(Event::Report(json!({"type":"task_parked", "message":"restart limit", "task":{"id":8,"conversationId":20}}).to_string()));
+    bridge.switching = false;
+    bridge.event(Event::Attached(20));
+    assert_eq!(bridge.parked_task, Some(8));
+    assert!(!bridge.running, "idle attachment must not resume or submit");
+    assert!(rx.try_recv().is_err());
+    bridge.retry_parked();
+    assert!(matches!(rx.recv().unwrap(), Command::Retry { task_id: 8 }));
+}

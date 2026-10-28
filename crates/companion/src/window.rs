@@ -36,6 +36,9 @@ pub struct CompanionWindow {
     selection: Option<(LiveSelection, String)>,
     bridge: Bridge,
     composer: Entity<AskBar>,
+    password_bar: Entity<AskBar>,
+    password_open: bool,
+    password_focus_pending: bool,
     chat_scroll: gpui::ScrollHandle,
     open_generation: u64,
     pub(crate) doc_env: Option<Arc<companion_env::VirtualDocFs>>,
@@ -92,6 +95,25 @@ impl CompanionWindow {
             cx.notify();
         })
         .detach();
+        let password_bar = cx.new(|cx| {
+            let mut bar = AskBar::new(cx);
+            bar.secret = true;
+            bar
+        });
+        cx.subscribe(&password_bar, |this, _, event: &AskEvent, cx| {
+            if let AskEvent::Submit(password) = event
+                && let (Some(pdf), Some(document)) = (&this.pdf, &this.document)
+            {
+                pdf.unlock(password.clone(), cx);
+                this.load_snapshot(document.clone(), password.clone(), cx);
+                this.password_bar.update(cx, |bar, cx| {
+                    bar.text.clear();
+                    cx.notify();
+                });
+            }
+            cx.notify();
+        })
+        .detach();
         #[cfg(feature = "agent")]
         let bridge = if let Some(hub) = catalog.clone() {
             let (bridge, events) = Bridge::start(hub);
@@ -132,6 +154,9 @@ impl CompanionWindow {
             selection: None,
             bridge,
             composer,
+            password_bar,
+            password_open: false,
+            password_focus_pending: false,
             chat_scroll: gpui::ScrollHandle::new(),
             open_generation: 0,
             doc_env: None,
@@ -155,6 +180,10 @@ impl CompanionWindow {
         view.refresh_recent();
         if let Some(path) = path {
             view.open_pdf(path, window, cx);
+        } else if let Some(document) = view.recent.first().cloned() {
+            // Reattach the last document on launch so an interrupted conversation
+            // reaches open-document + resume-wait without a manual reopen.
+            view.open_document(document, window, cx);
         }
         view
     }
@@ -218,6 +247,12 @@ impl CompanionWindow {
 
     fn release_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.doc_env.take();
+        self.password_open = false;
+        self.password_focus_pending = false;
+        self.password_bar.update(cx, |bar, cx| {
+            bar.text.clear();
+            cx.notify();
+        });
         if let Some(pdf) = self.pdf.take() {
             pdf.release(window, cx);
         }
@@ -299,9 +334,46 @@ impl CompanionWindow {
             }),
             cx,
         );
+        cx.subscribe(
+            &pdf.view(),
+            |this, viewer, event: &gpui_pdf::PdfEvent, cx| {
+                if matches!(event, gpui_pdf::PdfEvent::LockChanged) {
+                    this.password_open = viewer.read(cx).is_locked();
+                    this.password_focus_pending = this.password_open;
+                    if this.password_open {
+                        this.error = None;
+                    }
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
         self.pdf = Some(pdf);
         self.document = Some(document.clone());
         self.selection = None;
+        self.load_snapshot(document.clone(), String::new(), cx);
+        self.error = None;
+        self.restore_highlights(cx);
+        if let Err(error) = catalog.touch_last_opened(&document.id) {
+            self.error = Some(format!("Cannot update recent files: {error:#}"));
+        }
+        self.refresh_recent();
+        // Reopening is explicit navigation, but preserve any saved excerpt/fraction.
+        self.persist_navigation(
+            progress.unwrap_or(ReadingProgress {
+                page_0: 0,
+                scroll_frac: 0.0,
+                viewport_excerpt: None,
+            }),
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn load_snapshot(&mut self, document: Document, password: String, cx: &mut Context<Self>) {
+        let Some(catalog) = self.catalog.clone() else {
+            return;
+        };
         self.open_generation += 1;
         let generation = self.open_generation;
         let copied = document.stored_path.clone();
@@ -315,10 +387,13 @@ impl CompanionWindow {
         let snapshot_catalog = catalog.clone();
         let task = cx.background_executor().spawn(async move {
             let bytes = Arc::new(std::fs::read(copied)?);
-            let snapshot =
-                DocSnapshot::build(bytes, meta).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            let snapshot = match DocSnapshot::build_with_password(bytes, meta, &password) {
+                Ok(snapshot) => snapshot,
+                Err(gpui_pdf::LoadError::Locked) => return Ok(None),
+                Err(error) => return Err(anyhow::anyhow!("{error:?}")),
+            };
             snapshot_catalog.set_page_count(&snapshot.meta.id, snapshot.meta.page_count)?;
-            Ok::<_, anyhow::Error>(Arc::new(snapshot))
+            Ok::<_, anyhow::Error>(Some(Arc::new(snapshot)))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -328,7 +403,9 @@ impl CompanionWindow {
                     return;
                 }
                 match result {
-                    Ok(snapshot) => {
+                    Ok(Some(snapshot)) => {
+                        this.password_open = false;
+                        this.error = None;
                         match companion_env::VirtualDocFs::new(
                             Some(snapshot.clone()),
                             this.catalog.as_ref().unwrap().clone(),
@@ -395,28 +472,16 @@ impl CompanionWindow {
                         }
                         this.refresh_recent();
                     }
+                    Ok(None) => {
+                        this.password_open = true;
+                        this.password_focus_pending = true;
+                    }
                     Err(error) => this.error = Some(format!("Cannot extract PDF text: {error:#}")),
                 }
                 cx.notify();
             });
         })
         .detach();
-        self.error = None;
-        self.restore_highlights(cx);
-        if let Err(error) = catalog.touch_last_opened(&document.id) {
-            self.error = Some(format!("Cannot update recent files: {error:#}"));
-        }
-        self.refresh_recent();
-        // Reopening is explicit navigation, but preserve any saved excerpt/fraction.
-        self.persist_navigation(
-            progress.unwrap_or(ReadingProgress {
-                page_0: 0,
-                scroll_frac: 0.0,
-                viewport_excerpt: None,
-            }),
-            cx,
-        );
-        cx.notify();
     }
 
     fn navigate(&mut self, forward: bool, cx: &mut Context<Self>) {
@@ -612,10 +677,22 @@ impl CompanionWindow {
 }
 
 impl Render for CompanionWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.password_open && self.password_focus_pending {
+            self.password_focus_pending = false;
+            self.password_bar
+                .update(cx, |bar, cx| bar.focus(window, cx));
+        }
         let weak = cx.weak_entity();
         let navigate_quote = move |page_0, _: &mut Window, cx: &mut gpui::App| {
             let _ = weak.update(cx, |this, cx| this.goto_explicit(page_0, cx));
+        };
+        let retry_weak = cx.weak_entity();
+        let retry = move |_: &mut Window, cx: &mut gpui::App| {
+            let _ = retry_weak.update(cx, |this, cx| {
+                this.bridge.retry_parked();
+                cx.notify();
+            });
         };
         let snapshot = self.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref());
         let scanned = snapshot
@@ -671,9 +748,14 @@ impl Render for CompanionWindow {
         };
 
         div()
+            .relative()
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 match event.keystroke.key.as_str() {
+                    "f" if event.keystroke.modifiers.control || event.keystroke.modifiers.platform => {
+                        if let Some(pdf) = &this.pdf { pdf.toggle_search(cx); }
+                        cx.stop_propagation();
+                    }
                     "pagedown" => { this.navigate(true, cx); cx.stop_propagation(); }
                     "pageup" => { this.navigate(false, cx); cx.stop_propagation(); }
                     "escape" => { this.bridge.abort(); cx.notify(); cx.stop_propagation(); }
@@ -713,6 +795,9 @@ impl Render for CompanionWindow {
                     .child(div().id("next-page").px_3().cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| this.navigate(true, cx)))
                         .child("Next"))
+                    .child(div().id("find-pdf").px_3().cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| { if let Some(pdf) = &this.pdf { pdf.toggle_search(cx); } }))
+                        .child("Find · ⌘/Ctrl F"))
                     .child(format!("Last explicit page: {}", page_0_to_1(self.page_0))),
             )
             .children(self.error.clone().map(|error| div().p_2().text_color(rgb(0xfca5a5)).child(error)))
@@ -758,7 +843,16 @@ impl Render for CompanionWindow {
                                 cx.notify();
                             }))
                             .child("What did I just read?"))
-                        .child(div().flex_1().min_h_0().child(crate::chat::pane(&self.bridge, self.composer.clone(), &self.chat_scroll, navigate_quote)))),
+                        .child(div().flex_1().min_h_0().child(crate::chat::pane(&self.bridge, self.composer.clone(), &self.chat_scroll, navigate_quote, retry)))),
             )
+            .children(self.password_open.then(|| {
+                div().absolute().inset_0().flex().items_center().justify_center()
+                    .bg(gpui::rgba(0x000000bb))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(div().w(px(480.)).p_4().rounded_md().bg(rgb(0x27272a))
+                        .child("Unlock PDF")
+                        .child(div().py_2().text_sm().child("Password required or incorrect. Kept in memory only."))
+                        .child(self.password_bar.clone()))
+            }))
     }
 }

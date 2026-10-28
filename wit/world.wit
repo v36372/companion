@@ -110,6 +110,7 @@ world guest {
   export submit: func(req-json: string) -> result<string, string>;
   /// Crash recovery only: resume() then waitForIdle(). Not Esc.
   export resume-wait: func() -> result<_, string>;
+  export retry-task: func(task-id: s64) -> result<_, string>;
   /// After submit returns or after trap+reinstantiate. conversation.abort().
   export abort: func(conversation-id: s64) -> result<_, string>;
   export set-follow: func(conversation-id: s64, enabled: bool) -> result<_, string>;

@@ -49,7 +49,10 @@ are used, read or searched for by tests.
 ## Boundary and lifecycle
 
 `src/protocol.ts` defines the JSON payloads. `open`, `open-document`, `close`,
-`submit`, `resume-wait`, `abort`, `set-follow` and `configure` are real exports.
+`submit`, `resume-wait`, `retry-task`, `abort`, `set-follow` and `configure` are real exports.
+Open-document reports resumable unfinished work; the UI awaits resume-wait on
+reattach. Retry-task calls Harness.retryTask and awaits resume/idle on-stack.
+See [reader UX](../docs/reader-ux.md) for recovery states and parked-task UI.
 `submit` awaits `submission.wait(BACKGROUND_CONTEXT)` **on-stack**; there is no
 poll pump. The view is subscribed before submit. Live changes use on-stream;
 on-commit carries only head-entry / busy transitions plus initial attachment.

@@ -17,6 +17,7 @@ export interface OpenDocumentReq {
 
 export interface OpenDocumentRes {
   conversationId: number;
+  resumable?: boolean;
 }
 
 export interface SubmitReq {

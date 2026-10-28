@@ -11,6 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn runtime() -> Runtime {
+    static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| Runtime::load().unwrap()).clone()
+}
+
 fn pump(
     bridge: &mut Bridge,
     events: &async_channel::Receiver<Event>,
@@ -95,7 +100,7 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
     let (out, events) = async_channel::unbounded();
     let secrets = Arc::new(MemorySecretStore::default());
     secrets.write("openrouter", "test-openrouter-key").unwrap();
-    let runtime = Runtime::load().unwrap(); // once for all four scenarios
+    let runtime = runtime(); // shared compile for this test binary
     let run_abort = abort.clone();
     let worker = std::thread::spawn(move || {
         run_with(
@@ -186,6 +191,124 @@ fn local_sse_tokens_commit_queue_escape_and_document_switch() {
             .iter()
             .all(|s| !s.text.contains("---BEGIN"))
     );
+    bridge.close();
+    worker.join().unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn launch_reattaches_checkpoint_shows_resuming_and_finishes() {
+    use companion_agent_host::wasm::{self, AgentHostState, Event as WasmEvent};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buf = [0; 4096];
+                let n = socket.read(&mut buf).unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&buf[..n]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let size: usize = headers
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length: "))
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if request.len() >= end + 4 + size {
+                        break;
+                    }
+                }
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").unwrap();
+            for i in 0..12 {
+                let data = format!(
+                    "data: {}\n\n",
+                    json!({"id":"resume","choices":[{"index":0,"delta":{"content":format!("recovered{i} ")},"finish_reason":null}]})
+                );
+                if write!(socket, "{:x}\r\n{}\r\n", data.len(), data).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            let data = "data: {\"id\":\"resume\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            let _ = write!(socket, "{:x}\r\n{}\r\n0\r\n\r\n", data.len(), data);
+        }
+    });
+    let runtime = runtime();
+    let hub = Arc::new(companion_store::SqliteHub::open(":memory:").unwrap());
+    hub.write(|c| { c.execute("INSERT INTO documents(id,title,source_path,stored_path,sha256) VALUES('A','A','','','a')", [])?; Ok(()) }).unwrap();
+    let secrets = Arc::new(MemorySecretStore::default());
+    secrets.write("openrouter", "test-openrouter-key").unwrap();
+    let policy = Policy::mock_provider(&format!("http://127.0.0.1:{port}")).unwrap();
+    let (out, incoming) = crossbeam_channel::unbounded();
+    let crash_runtime = runtime.clone();
+    let state = AgentHostState::with_secrets(
+        Abort::default(),
+        policy.clone(),
+        out,
+        secrets.clone(),
+        hub.clone(),
+    );
+    let crashed = std::thread::spawn(move || {
+        let (mut store, guest) = wasm::instantiate(&crash_runtime, state).unwrap();
+        guest
+            .call_open(
+                &mut store,
+                r#"{"provider":"openrouter","modelId":"~anthropic/claude-haiku-latest"}"#,
+            )
+            .unwrap()
+            .unwrap();
+        let attached = guest.call_open_document(&mut store, r#"{"documentId":"A","title":"A","pageCount":1,"provider":"openrouter","modelId":"~anthropic/claude-haiku-latest"}"#).unwrap().unwrap();
+        let id = serde_json::from_str::<Value>(&attached).unwrap()["conversationId"]
+            .as_i64()
+            .unwrap();
+        assert!(guest.call_submit(&mut store, &json!({"conversationId":id,"requestId":"crashed-request","content":"Recover this"}).to_string()).is_err());
+        drop(store); // process loss: no close/abort
+        id
+    });
+    loop {
+        if let WasmEvent::Chunk { json, .. } =
+            incoming.recv_timeout(Duration::from_secs(300)).unwrap()
+            && json.contains("recovered")
+        {
+            runtime.engine.increment_epoch();
+            break;
+        }
+    }
+    let id = crashed.join().unwrap();
+    let abort = Abort::default();
+    let cancel = abort.clone();
+    let prepare = abort.clone();
+    let (tx, commands) = crossbeam_channel::unbounded();
+    let (out, events) = async_channel::unbounded();
+    let worker = std::thread::spawn(move || {
+        run_with(hub, runtime, abort, policy, secrets, commands, &out).unwrap()
+    });
+    let mut bridge = Bridge::off();
+    bridge.tx = Some(tx);
+    bridge.cancel = Arc::new(move || cancel.request());
+    bridge.prepare = Arc::new(move || prepare.reset());
+    pump(&mut bridge, &events, |b| b.available);
+    bridge.switch_document(attachment("A"));
+    pump(&mut bridge, &events, |b| b.status.contains("Resuming"));
+    assert!(bridge.running);
+    pump(&mut bridge, &events, |b| {
+        !b.running && b.conversation == Some(id)
+    });
+    assert!(
+        bridge
+            .transcript
+            .iter()
+            .any(|t| t.text.contains("recovered11"))
+    );
+    assert_eq!(bridge.status, "Ready");
     bridge.close();
     worker.join().unwrap();
     server.join().unwrap();
