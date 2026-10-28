@@ -57,6 +57,7 @@ impl CompanionWindow {
         let spacing = cx.theme().spacing_tokens();
         let typography = cx.theme().typography_tokens();
         let muted = cx.theme().muted_foreground;
+        let hovered = cx.theme().tokens.list_hover;
         let pressed = cx.theme().list_active;
         let radius = cx.theme().radius;
         let tabs = TabBar::new("sidebar-tabs")
@@ -149,7 +150,9 @@ impl CompanionWindow {
                                     .selected(current == Some(index))
                                     .disabled(!available)
                                     .when(available, |row| {
-                                        row.cursor_pointer().active(move |style| style.bg(pressed))
+                                        row.cursor_pointer()
+                                            .hover(move |style| style.bg(hovered))
+                                            .active(move |style| style.bg(pressed))
                                     })
                                     .when(!available, |row| row.opacity(0.45))
                                     .tooltip(move |window, cx| {
@@ -198,6 +201,7 @@ impl CompanionWindow {
                         .rounded(radius)
                         .selected(is_open)
                         .cursor_pointer()
+                        .hover(move |style| style.bg(hovered))
                         .active(move |style| style.bg(pressed))
                         .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                         .child(
