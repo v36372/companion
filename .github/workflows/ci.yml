@@ -86,6 +86,13 @@ jobs:
         run: test -s crates/companion-agent-host/src/agent-core.wasm
       - name: Install pinned Rust toolchain
         run: rustup show
+      # Only Clippy uses dev; the release build below remains fully optimised.
+      - name: Use unoptimised CI dev profile
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
+            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-release-agent
