@@ -8,6 +8,13 @@ members = [
 ]
 resolver = "2"
 
+# GPUI, hayro and Wasmtime are too slow unoptimised for an interactive GUI.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.package]
 edition = "2024"
 license = "MIT"

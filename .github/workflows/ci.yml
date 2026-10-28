@@ -27,8 +27,17 @@ jobs:
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev libsqlite3-dev libdbus-1-dev
       - name: Install pinned Rust toolchain
         run: rustup show
+      # CI checks correctness, not GUI responsiveness; avoid optimising all deps.
+      - name: Use unoptimised CI dev profile
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
+            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
+          # rust-cache does not include workspace profile settings in its key.
+          shared-key: ci-dev-unoptimised-v1
           cache-on-failure: true
       - name: Check formatting
         if: hashFiles('Cargo.toml') != ''
@@ -77,6 +86,13 @@ jobs:
         run: test -s crates/companion-agent-host/src/agent-core.wasm
       - name: Install pinned Rust toolchain
         run: rustup show
+      # Only Clippy uses dev; the release build below remains fully optimised.
+      - name: Use unoptimised CI dev profile
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
+            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-release-agent
@@ -147,9 +163,17 @@ jobs:
         working-directory: agent
       - name: Install pinned Rust toolchain
         run: rustup show
+      # Match rust's CI-only profile and keep local GUI development optimised.
+      - name: Use unoptimised CI dev profile
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
+            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: agent
+          # shared-key replaces key, so the agent needs its own namespace.
+          shared-key: ci-agent-dev-unoptimised-v1
           cache-on-failure: true
       - name: Lint workspace with agent and mock-provider features
         run: cargo clippy --workspace --all-targets --locked --features companion/test-mock-provider -- -D warnings
