@@ -21,8 +21,7 @@ Implemented through PR0–PR11. See the [product vision](docs/VISION.md),
   set below, and run in an X11/Wayland desktop with a working Vulkan driver.
   Native key storage also needs an accessible, unlocked Secret Service over D-Bus.
 - **macOS:** install Xcode Command Line Tools and the Rust/Node prerequisites.
-  macOS uses the native Keychain. **macOS builds and UI behavior are unverified:**
-  the repository has Linux-only CI and no app-specific macOS setup path.
+  macOS uses the native Keychain. macOS (Apple Silicon) is built and release-smoke-tested in CI.
 
 Linux packages (from `.github/workflows/ci.yml`):
 
@@ -38,7 +37,7 @@ sudo apt-get install -y \
 
 From the repository root, after installing the prerequisites and setting an
 OpenRouter key as described below. The commands are the same on both platforms;
-only Linux is CI-verified.
+both Linux checks and a macOS release launch are CI-verified.
 
 ```sh
 cd agent
@@ -125,8 +124,8 @@ The chat pane's **Set up key** action shows the environment/keychain commands.
 Missing keys, key-store failures, startup, document preparation and disabled-agent
 builds have explicit status messages. Send, Ask, Follow, canned questions and Model
 are dimmed while unavailable; the composer remains editable and keeps your draft.
-On macOS, unsigned rebuilds may require Keychain approval again; macOS behavior
-remains unverified.
+On macOS, unsigned rebuilds may require Keychain approval again; interactive
+Keychain approval is not covered by the no-key CI smoke.
 
 If sending reports a DNS address in **198.18.0.0/15**, a fake-IP VPN/proxy such as
 Surge or Clash is likely intercepting DNS. Exclude **openrouter.ai** from fake-IP
@@ -279,7 +278,7 @@ cargo test -p companion --features test-mock-provider -- --test-threads=1
 `cargo test -p companion-agent-host --features agent -- --nocapture --test-threads=1`.
 Without `--built` it also installs/bundles/componentizes the guest.
 
-CI has two **independent Ubuntu 24.04 jobs**:
+CI has two **independent Ubuntu 24.04 jobs** and a macOS consumer of the agent artifact:
 
 - **rust:** apt dependencies, pinned toolchain, formatting, locked workspace
   build, workspace tests, Clippy (`-D warnings`), and a guard against ambiguous
@@ -288,6 +287,20 @@ CI has two **independent Ubuntu 24.04 jobs**:
   WASI import artifact, Node local-provider mock, pinned Rust, agent/mock-feature
   Clippy (`-D warnings`), host component harness and headless bridge tests.
   It uploads the WASM and generated WIT description even on cache hits.
+- **macos:** Apple Silicon (`macos-14`), pinned Rust, a separate Rust cache,
+  locked release build and Clippy with `agent`. Downloads `agent-core` from the
+  agent job without rebuilding JavaScript, then launches for 15 seconds with
+  fresh data/cache directories, the tiny `hello.pdf` fixture and no keys.
+  The `macos-release-smoke` artifact contains the app log and a best-effort screenshot.
+  This job waits for agent; the Linux Rust job remains independent.
+
+Locally on a logged-in macOS GUI session, after the release build, run
+`scripts/smoke-macos.sh [release-binary] [artifact-directory]`. It checks process
+liveness and the window-open INFO log, then terminates the app and removes its
+isolated data/cache. It unsets credential environment variables and refuses an
+existing app Keychain credential (never modifies your keys). This is a launch
+smoke, not a PDF-rendering, menu-interaction or live-provider test. Cold agent
+compilation may still be running when the observation period ends.
 
 CI disables Rust debug information and incremental compilation to keep cached
 artifacts small and use consistent profiles across checks and the component harness.
@@ -300,8 +313,8 @@ requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
 - No live run against real OpenRouter or Brave has been verified; provider tests
   and recorded UI smokes use local mock servers. A live run needs your keys and
   outbound HTTPS.
-- No macOS CI or verified macOS build/UI smoke; Linux CI is not cross-platform
-  proof. File-dialog interaction was not exercised by the initial headless smoke.
+- CI's macOS release smoke checks no-key window creation and liveness, not
+  interactive Keychain approval, app-menu actions or file-dialog interaction.
 - Scans have no OCR. Progress, Follow and the scanned-page banner describe
   explicit navigation, not the live scroll viewport. Upstream accessors/events
   are still missing; the upstream issue was drafted, not posted.
