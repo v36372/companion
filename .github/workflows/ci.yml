@@ -34,6 +34,8 @@ jobs:
           else
             cargo build --workspace
           fi
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test workspace
         if: hashFiles('Cargo.toml') != ''
         run: cargo test --workspace
@@ -88,6 +90,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: agent
+      - name: Lint workspace with agent and mock-provider features
+        run: cargo clippy --workspace --all-targets --locked --features companion/test-mock-provider -- -D warnings
       - name: Run component harness, PDF tools, host-auth, streaming and abort tests
         run: scripts/spike-sse.sh --built
       - name: Run window-independent chat bridge against local SSE
