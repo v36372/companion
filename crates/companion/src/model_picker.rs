@@ -1,10 +1,15 @@
-//! Compact, local-only OpenRouter preference editor.
+//! Local-only model preference editor, in an overlay rather than document flow.
 use crate::ask_bar::{AskBar, AskEvent};
 use companion_store::{
     SqliteHub,
     settings::{DEFAULT_MODEL_ID, MODEL_CHOICES},
 };
-use gpui::{Context, Entity, Render, Window, div, prelude::*, rgb};
+use gpui::{AnyElement, Context, Entity, Render, Window, div, prelude::*};
+use gpui_component::{
+    ActiveTheme, Disableable, Sizable,
+    button::{Button, ButtonVariants},
+    popover::Popover,
+};
 use std::sync::Arc;
 
 pub struct ModelPicker {
@@ -16,7 +21,6 @@ pub struct ModelPicker {
     error: Option<String>,
     pub disabled_reason: Option<String>,
 }
-
 impl ModelPicker {
     pub fn new(hub: Option<Arc<SqliteHub>>, cx: &mut Context<Self>) -> Self {
         let saved = hub.as_ref().map(|hub| hub.model_id()).transpose();
@@ -47,7 +51,6 @@ impl ModelPicker {
             disabled_reason: None,
         }
     }
-
     fn save(&mut self, value: &str, cx: &mut Context<Self>) {
         if self.disabled_reason.is_some() {
             return;
@@ -67,8 +70,58 @@ impl ModelPicker {
         }
         cx.notify();
     }
+    fn menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w(gpui::px(300.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .children(
+                MODEL_CHOICES
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(id, label))| {
+                        Button::new(("model-choice", index))
+                            .ghost()
+                            .label(format!(
+                                "{} {label}",
+                                if id == self.selected { "✓" } else { " " }
+                            ))
+                            .disabled(self.disabled_reason.is_some())
+                            .on_click(cx.listener(move |this, _, _, cx| this.save(id, cx)))
+                    }),
+            )
+            .child(
+                Button::new("custom-model")
+                    .ghost()
+                    .label("Custom…")
+                    .disabled(self.disabled_reason.is_some())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.custom = true;
+                        this.input.update(cx, |input, cx| {
+                            input.text = this.selected.clone();
+                            input.focus(window, cx);
+                            cx.notify();
+                        });
+                        cx.notify();
+                    })),
+            )
+            .when(self.custom, |menu| menu.child(self.input.clone()))
+            .children(
+                self.error
+                    .clone()
+                    .map(|error| div().text_sm().text_color(cx.theme().danger).child(error)),
+            )
+            .child(
+                div()
+                    .pt_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Applies to the next turn; the current run is unchanged."),
+            )
+            .into_any_element()
+    }
 }
-
 impl Render for ModelPicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let label = MODEL_CHOICES
@@ -76,82 +129,32 @@ impl Render for ModelPicker {
             .find(|(id, _)| *id == self.selected)
             .map(|(_, label)| (*label).to_owned())
             .unwrap_or_else(|| self.selected.clone());
-        div()
-            .px_4()
-            .py_2()
-            .text_sm()
-            .child(
-                div()
-                    .id("model-picker")
-                    .text_color(rgb(if self.disabled_reason.is_some() {
-                        0x71717a
-                    } else {
-                        0x93c5fd
-                    }))
-                    .when(self.disabled_reason.is_none(), |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(0x3f3f46)))
-                            .active(|style| style.bg(rgb(0x52525b)))
-                    })
-                    .child(format!("Model: {label} ▾"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.disabled_reason.is_none() {
-                            this.open = !this.open;
-                        }
-                        cx.notify();
-                    })),
-            )
-            .children((self.open && self.disabled_reason.is_none()).then(|| {
-                div()
-                    .mt_2()
-                    .p_2()
-                    .rounded_md()
-                    .bg(rgb(0x27272a))
-                    .children(
-                        MODEL_CHOICES
-                            .iter()
-                            .enumerate()
-                            .map(|(index, &(id, label))| {
-                                div()
-                                    .id(("model-choice", index))
-                                    .py_2()
-                                    .cursor_pointer()
-                                    .child(format!(
-                                        "{} {label}",
-                                        if id == self.selected { "✓" } else { " " }
-                                    ))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.save(id, cx)))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("custom-model")
-                            .py_2()
-                            .cursor_pointer()
-                            .child("Custom…")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.custom = true;
-                                this.input.update(cx, |input, cx| {
-                                    input.text = this.selected.clone();
-                                    input.focus(window, cx);
-                                    cx.notify();
-                                });
-                                cx.notify();
-                            })),
-                    )
-                    .children(self.custom.then(|| self.input.clone()))
-                    .child(
-                        div()
-                            .mt_2()
-                            .text_color(rgb(0xa1a1aa))
-                            .child("Applies to the next turn; current run is unchanged."),
-                    )
-            }))
-            .children(
-                self.error
-                    .clone()
-                    .map(|error| div().text_color(rgb(0xfca5a5)).child(error)),
-            )
+        let weak = cx.entity().downgrade();
+        div().px_3().child(
+            Popover::new("model-picker-popover")
+                .open(self.open && self.disabled_reason.is_none())
+                .on_open_change(cx.listener(|this, open, _, cx| {
+                    this.open = *open && this.disabled_reason.is_none();
+                    cx.notify();
+                }))
+                .trigger(
+                    Button::new("model-picker")
+                        .max_w_full()
+                        .outline()
+                        .small()
+                        .label(format!("Model: {label}"))
+                        .dropdown_caret(true)
+                        .disabled(self.disabled_reason.is_some())
+                        .tooltip(
+                            self.disabled_reason
+                                .clone()
+                                .unwrap_or_else(|| "Choose a model for your next turn".into()),
+                        ),
+                )
+                .content(move |_, _, cx| {
+                    weak.update(cx, |this, cx| this.menu(cx))
+                        .unwrap_or_else(|_| div().into_any_element())
+                }),
+        )
     }
 }

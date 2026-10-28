@@ -1,5 +1,10 @@
-//! Small keyboard composer; no gpui-kit dependency.
-use gpui::{Context, EventEmitter, FocusHandle, Render, Window, div, prelude::*, rgb};
+//! Native, IME-capable input shared by chat, password and custom-model entry.
+use gpui::{Context, Entity, EventEmitter, FocusHandle, Render, Window, div, prelude::*};
+use gpui_component::{
+    ActiveTheme, Disableable, IconName,
+    button::{Button, ButtonVariants},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+};
 
 pub enum AskEvent {
     Submit(String),
@@ -11,6 +16,9 @@ pub struct AskBar {
     pub secret: bool,
     pub model_input: bool,
     pub disabled_reason: Option<String>,
+    pub running: bool,
+    input: Option<Entity<InputState>>,
+    textarea: Option<Entity<TextareaState>>,
 }
 impl AskBar {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -20,10 +28,19 @@ impl AskBar {
             secret: false,
             model_input: false,
             disabled_reason: None,
+            running: false,
+            input: None,
+            textarea: None,
         }
     }
     pub fn focus(&self, window: &mut Window, cx: &mut gpui::App) {
-        self.focus.focus(window, cx);
+        if let Some(input) = &self.input {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        } else if let Some(input) = &self.textarea {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        } else {
+            self.focus.focus(window, cx);
+        }
     }
     fn submit(&mut self, cx: &mut Context<Self>) {
         if self.disabled_reason.is_none() && (self.model_input || !self.text.trim().is_empty()) {
@@ -33,7 +50,59 @@ impl AskBar {
 }
 impl EventEmitter<AskEvent> for AskBar {}
 impl Render for AskBar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Created on first render because native input state requires a Window.
+        macro_rules! init_input {
+            ($field:ident, $state:ident, $placeholder:expr) => {
+                if self.$field.is_none() {
+                    let input = cx.new(|cx| {
+                        $state::new(window, cx)
+                            .placeholder($placeholder)
+                            .submit_on_enter(true)
+                    });
+                    cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+                        match event {
+                            InputEvent::Change => this.text = input.read(cx).value().to_string(),
+                            InputEvent::PressEnter { shift: false, .. } => this.submit(cx),
+                            _ => {}
+                        }
+                        cx.notify();
+                    })
+                    .detach();
+                    self.$field = Some(input);
+                }
+                let input = self.$field.as_ref().unwrap();
+                if input.read(cx).value().as_ref() != self.text {
+                    input.update(cx, |input, cx| {
+                        input.set_value(self.text.clone(), window, cx)
+                    });
+                }
+                if self.focus.is_focused(window) {
+                    input.update(cx, |input, cx| input.focus(window, cx));
+                }
+            };
+        }
+        let editor = if self.secret || self.model_input {
+            init_input!(
+                input,
+                InputState,
+                if self.secret {
+                    "PDF password…"
+                } else {
+                    "OpenRouter model id…"
+                }
+            );
+            let input = self.input.as_ref().unwrap();
+            if input.read(cx).presentation().is_masked() != self.secret {
+                input.update(cx, |input, cx| input.set_masked(self.secret, window, cx));
+            }
+            Input::new(input).into_any_element()
+        } else {
+            init_input!(textarea, TextareaState, "Ask about this PDF…");
+            Textarea::new(self.textarea.as_ref().unwrap())
+                .h(gpui::px(96.))
+                .into_any_element()
+        };
         let can_send =
             self.disabled_reason.is_none() && (self.model_input || !self.text.trim().is_empty());
         div()
@@ -41,79 +110,69 @@ impl Render for AskBar {
             .track_focus(&self.focus)
             .flex()
             .flex_col()
-            .p_3()
             .gap_2()
-            .border_1()
-            .border_color(rgb(0x52525b))
-            .rounded_md()
-            .bg(rgb(0x27272a))
-            .on_click(cx.listener(|this, _, window, cx| this.focus(window, cx)))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                let key = &event.keystroke;
-                match key.key.as_str() {
-                    "escape" => cx.emit(AskEvent::Abort),
-                    "enter" if !key.modifiers.shift => this.submit(cx),
-                    "enter" => this.text.push('\n'),
-                    "backspace" => {
-                        this.text.pop();
-                    }
-                    "v" if key.modifiers.control || key.modifiers.platform => {
-                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                            this.text.push_str(&text);
-                        }
-                    }
-                    _ if !key.modifiers.control && !key.modifiers.platform => {
-                        if let Some(text) = &key.key_char {
-                            this.text.push_str(text);
-                        }
-                    }
-                    _ => return,
+            .w_full()
+            .min_w_0()
+            .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    cx.emit(AskEvent::Abort);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
-                cx.notify();
             }))
-            .child(if self.text.is_empty() {
-                if self.model_input {
-                    "OpenRouter model id…"
-                } else if self.secret {
-                    "PDF password…"
-                } else {
-                    "Ask about this PDF…"
-                }
-                .into()
-            } else if self.secret {
-                "•".repeat(self.text.chars().count())
-            } else {
-                self.text.clone()
-            })
+            .child(editor)
             .child(
                 div()
-                    .id("send-question")
-                    .text_sm()
-                    .text_color(rgb(if can_send { 0x93c5fd } else { 0x71717a }))
-                    .when(can_send, |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(0x3f3f46)))
-                            .active(|style| style.bg(rgb(0x52525b)))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.submit(cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(if self.model_input {
-                        "Save model ↵"
-                    } else if self.secret {
-                        "Unlock ↵"
-                    } else {
-                        "Send ↵ · Shift+Enter for newline"
-                    }),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if self.secret || self.model_input {
+                                "Enter to confirm"
+                            } else {
+                                "Shift+Enter for newline"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .when(self.running, |row| {
+                                row.child(
+                                    Button::new("stop-question")
+                                        .outline()
+                                        .icon(IconName::CircleX)
+                                        .label("Stop")
+                                        .tooltip("Stop generation (Escape)")
+                                        .on_click(
+                                            cx.listener(|_, _, _, cx| cx.emit(AskEvent::Abort)),
+                                        ),
+                                )
+                            })
+                            .child(
+                                Button::new("send-question")
+                                    .primary()
+                                    .icon(IconName::ArrowUp)
+                                    .label(if self.model_input {
+                                        "Save"
+                                    } else if self.secret {
+                                        "Unlock"
+                                    } else {
+                                        "Send"
+                                    })
+                                    .disabled(!can_send)
+                                    .tooltip(
+                                        self.disabled_reason
+                                            .clone()
+                                            .unwrap_or_else(|| "Send (Enter)".into()),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                            ),
+                    ),
             )
-            .children(self.disabled_reason.as_ref().map(|_| {
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xa1a1aa))
-                    .child("Send disabled — see Agent status. You can keep typing.")
-            }))
     }
 }
