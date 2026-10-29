@@ -75,7 +75,7 @@ pub fn destination_on_page(doc: &Pdf, array: &Array<'_>, page: usize) -> PageDes
         _ => None,
     };
     let y = doc.pages().get(page).and_then(|p| {
-        let cb = p.crop_box();
+        let cb = p.intersected_crop_box();
         // /FitR is [left bottom right top], unlike /XYZ.
         let top = if kind.as_ref().is_some_and(|n| n.as_str() == "FitR") {
             let _ = values.next();
@@ -137,7 +137,7 @@ pub fn page_links(doc: &Pdf) -> Vec<Vec<PdfLink>> {
         .iter()
         .map(|page| {
             let mut links = Vec::new();
-            let cb = page.crop_box();
+            let cb = page.intersected_crop_box();
             if cb.width() <= 0.0 || cb.height() <= 0.0 {
                 return links;
             }
