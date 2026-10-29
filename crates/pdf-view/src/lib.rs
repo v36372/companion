@@ -35,20 +35,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point,
-    px,
+    AppContext, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point, px,
 };
-// Only the forms layer maps field rects to window space.
-#[cfg(feature = "forms")]
-use gpui::{Bounds, Pixels};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 use image::{Frame, RgbaImage};
 
 #[cfg(feature = "markup")]
-use gpui::{MouseMoveEvent, deferred};
+use gpui::MouseMoveEvent;
 
 #[cfg(feature = "markup")]
 mod text;
@@ -59,10 +55,9 @@ pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 mod outline;
 pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 
-#[cfg(feature = "forms")]
-mod forms;
-#[cfg(feature = "forms")]
-pub use forms::{FieldKind, FormField, form_fields, normalize_form_appearances, set_form_value};
+#[cfg(feature = "search")]
+mod find_bar;
+mod toolbar;
 
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 
@@ -96,13 +91,6 @@ pub fn parse_with_password(
     bytes: Arc<Vec<u8>>,
     password: &str,
 ) -> Result<Arc<Document>, LoadError> {
-    // Form display correctness: give every form widget a directly-renderable
-    // appearance stream before hayro sees the bytes (see `forms`). A no-op
-    // (or an encrypted/unparseable file) keeps the original bytes.
-    #[cfg(feature = "forms")]
-    let bytes = normalize_form_appearances(&bytes)
-        .map(Arc::new)
-        .unwrap_or(bytes);
     match Pdf::new_with_password(bytes, password) {
         Ok(pdf) => Ok(Arc::new(pdf)),
         Err(LoadPdfError::Decryption(DecryptionError::PasswordProtected)) => Err(LoadError::Locked),
@@ -111,24 +99,18 @@ pub fn parse_with_password(
 }
 
 /// Everything [`PdfView`] needs to display a document: the parsed doc, per-page
-/// sizes, the outline, per-page links — and, under `forms`, the form fields.
+/// sizes, the outline, and per-page links.
 struct Prepared {
     doc: Arc<Document>,
     dims: Vec<(f32, f32)>,
     toc: Vec<OutlineItem>,
     links: Vec<Vec<PdfLink>>,
-    /// Enumerated from the ORIGINAL bytes (not the display-normalized ones), so
-    /// values/rects match what [`set_form_value`] will rewrite on disk.
-    #[cfg(feature = "forms")]
-    fields: Vec<FormField>,
 }
 
 /// Parse `bytes` with `password` and measure it — the off-thread half of a load,
 /// shared by the initial open, a password [`PdfView::unlock`], and
 /// [`PdfView::replace_bytes`].
 fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
-    #[cfg(feature = "forms")]
-    let fields = form_fields(&bytes);
     let doc = parse_with_password(bytes, password)?;
     let dims = page_dims(&doc);
     let toc = crate::outline::outline(&doc);
@@ -138,8 +120,6 @@ fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
         dims,
         toc,
         links,
-        #[cfg(feature = "forms")]
-        fields,
     })
 }
 
@@ -440,25 +420,6 @@ pub type HighlightClickFn = Rc<dyn Fn(u64, &mut Window, &mut gpui::App)>;
 pub type CreateHighlightFn =
     Rc<dyn Fn(usize, String, usize, SharedString, &mut Window, &mut gpui::App)>;
 
-/// Invoked when the user finishes a box-drag in "area mode": the page (0-based), the
-/// dragged rect in normalized page coordinates, and the label of the picked color.
-/// The host stores it and hands it back as a [`Highlight`] with `region` set.
-/// (`markup` feature.)
-#[cfg(feature = "markup")]
-pub type CreateAreaFn = Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut gpui::App)>;
-
-/// The normalized rect spanned by two drag endpoints, in either direction.
-/// (`markup` feature.)
-#[cfg(feature = "markup")]
-fn norm_rect_between(a: NormPoint, b: NormPoint) -> NormRect {
-    NormRect {
-        x: a.x.min(b.x),
-        y: a.y.min(b.y),
-        w: (a.x - b.x).abs(),
-        h: (a.y - b.y).abs(),
-    }
-}
-
 /// Invoked from the load-failure pane's "Open in system viewer" button, so the
 /// host can hand the file to the OS default app — the viewer itself stays
 /// host-agnostic (no process spawning). Set via [`PdfView::set_on_open_external`];
@@ -505,16 +466,6 @@ pub enum PdfEvent {
     /// non-password error (e.g. an unsupported encryption handler discovered
     /// at unlock time), so a password prompt knows to stand down.
     LoadFailed,
-    /// A form-field widget was clicked (`forms` feature): the field's
-    /// description and its current window-space bounds — everything a host
-    /// needs to toggle a checkbox or seat a text input right over the widget,
-    /// write through [`set_form_value`], persist, and call
-    /// [`PdfView::replace_bytes`].
-    #[cfg(feature = "forms")]
-    FieldClicked {
-        field: FormField,
-        bounds: Bounds<Pixels>,
-    },
 }
 
 /// Construct with [`PdfView::new`] inside `cx.new`; it loads and measures the file
@@ -568,8 +519,9 @@ pub struct PdfView {
     /// Painted bitmaps awaiting a `drop_image` (which needs a `Window`); drained at
     /// the top of `ensure_window`. Used when a fresh bitmap replaces an old one.
     pending_drops: Vec<Arc<RenderImage>>,
-    /// `Some` while the page-number field is being edited (the typed digits).
-    page_input: Option<String>,
+    /// Native page-number input (created on first render, which supplies a Window).
+    page_input: Option<gpui::Entity<gpui_component::input::InputState>>,
+    page_input_focus: bool,
     focus: FocusHandle,
     /// The document outline (bookmarks), extracted once on load; empty if the PDF
     /// has none. Drives the optional table-of-contents panel.
@@ -579,11 +531,6 @@ pub struct PdfView {
     /// Per-page clickable link annotations (internal page jumps + external URIs),
     /// extracted once on load. Overlaid as transparent click targets on each page.
     links: Vec<Vec<PdfLink>>,
-    /// Form-field widgets (`forms` feature), enumerated on load from the
-    /// original bytes. Overlaid like `links`; a click emits
-    /// [`PdfEvent::FieldClicked`].
-    #[cfg(feature = "forms")]
-    form_fields: Vec<FormField>,
     /// Highlights to draw (markup), provided by the host.
     #[cfg(feature = "markup")]
     highlights: Vec<Highlight>,
@@ -593,13 +540,6 @@ pub struct PdfView {
     /// Click handler for a highlight (markup).
     #[cfg(feature = "markup")]
     on_highlight: Option<HighlightClickFn>,
-    /// "Area mode" (only meaningful while `selecting`): a drag marks a page
-    /// region instead of selecting text (markup).
-    #[cfg(feature = "markup")]
-    area_mode: bool,
-    /// Called when an area drag finishes, so the host stores it (markup).
-    #[cfg(feature = "markup")]
-    on_create_area: Option<CreateAreaFn>,
     /// "Highlight mode": dragging over text selects + creates a highlight (markup).
     #[cfg(feature = "markup")]
     selecting: bool,
@@ -634,6 +574,10 @@ pub struct PdfView {
     /// The current search query (edited in the find bar).
     #[cfg(feature = "search")]
     search_query: String,
+    #[cfg(feature = "search")]
+    search_input: Option<gpui::Entity<gpui_component::input::InputState>>,
+    #[cfg(feature = "search")]
+    search_input_focus: bool,
     /// Matches across the document, in reading order (page, then top-to-bottom).
     #[cfg(feature = "search")]
     matches: Vec<SearchMatch>,
@@ -715,12 +659,11 @@ impl PdfView {
             generation: 0,
             pending_drops: Vec::new(),
             page_input: None,
+            page_input_focus: false,
             focus: cx.focus_handle(),
             outline: Vec::new(),
             toc_open: false,
             links: Vec::new(),
-            #[cfg(feature = "forms")]
-            form_fields: Vec::new(),
             #[cfg(feature = "markup")]
             highlights: Vec::new(),
             #[cfg(feature = "markup")]
@@ -729,10 +672,6 @@ impl PdfView {
             on_highlight: None,
             #[cfg(feature = "markup")]
             selecting: false,
-            #[cfg(feature = "markup")]
-            area_mode: false,
-            #[cfg(feature = "markup")]
-            on_create_area: None,
             #[cfg(feature = "markup")]
             sel_drag: None,
             #[cfg(feature = "markup")]
@@ -754,6 +693,10 @@ impl PdfView {
             #[cfg(feature = "search")]
             search_query: String::new(),
             #[cfg(feature = "search")]
+            search_input: None,
+            #[cfg(feature = "search")]
+            search_input_focus: false,
+            #[cfg(feature = "search")]
             matches: Vec::new(),
             #[cfg(feature = "search")]
             current_match: None,
@@ -769,16 +712,12 @@ impl PdfView {
         self.dims = prepared.dims;
         self.outline = prepared.toc;
         self.links = prepared.links;
-        #[cfg(feature = "forms")]
-        {
-            self.form_fields = prepared.fields;
-        }
         // Page slots: on the initial load, empty ones (the next render's
         // `ensure_window` rasterizes the visible window). On a replace_bytes
         // reload, KEEP the old bitmaps and bump the generation instead — the
         // stale page paints until its crisp replacement lands, the same
         // no-blanking swap zoom and quality changes use (blanking every slot
-        // flashed the whole viewer black on each form-field write).
+        // flashed the whole viewer black on each document update).
         if self.pages.len() == n {
             self.generation += 1;
             for slot in &mut self.pages {
@@ -805,87 +744,8 @@ impl PdfView {
         }
     }
 
-    /// A field's window-space bounds right now, from its page-normalized rect
-    /// — the inverse of `point_to_page`'s mapping (`bounds_for_item` is in the
-    /// scroll element's unscrolled frame; y shifts by the scroll offset).
-    /// `None` before the page has laid out. (`forms` feature.)
-    #[cfg(feature = "forms")]
-    fn field_screen_bounds(
-        &self,
-        page: usize,
-        nrect: (f32, f32, f32, f32),
-    ) -> Option<Bounds<Pixels>> {
-        let cb = self.scroll.bounds_for_item(page)?;
-        let (nx, ny, nw, nh) = nrect;
-        let w = f32::from(cb.size.width);
-        let h = f32::from(cb.size.height);
-        if w <= 0.0 || h <= 0.0 {
-            return None;
-        }
-        Some(Bounds::new(
-            point(
-                cb.origin.x + px(nx * w),
-                cb.origin.y + self.scroll.offset().y + px(ny * h),
-            ),
-            gpui::size(px(nw * w), px(nh * h)),
-        ))
-    }
-
-    /// The document's form fields, as enumerated at load — for a host driving
-    /// field-to-field navigation (Tab order is the enumeration order: page,
-    /// then document order). (`forms` feature.)
-    #[cfg(feature = "forms")]
-    pub fn form_fields(&self) -> &[FormField] {
-        &self.form_fields
-    }
-
-    /// Scroll so `field`'s widget is comfortably on-screen, then return its
-    /// fresh window-space bounds — what a host needs to seat an input on a
-    /// field reached by Tab rather than by click. `None` before layout.
-    /// (`forms` feature.)
-    #[cfg(feature = "forms")]
-    pub fn reveal_field(
-        &mut self,
-        field: &FormField,
-        cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        let (pw, ph) = *self.dims.get(field.page)?;
-        if pw <= 0.0 || ph <= 0.0 {
-            return None;
-        }
-        let (x0, y0, x1, y1) = field.rect;
-        let nrect = (x0 / pw, 1.0 - y1 / ph, (x1 - x0) / pw, (y1 - y0) / ph);
-        let cb = self.scroll.bounds_for_item(field.page)?;
-        let vp = self.scroll.bounds();
-        // Window-space y of the field at the current offset (bounds_for_item is
-        // the unscrolled frame; window y = frame y + offset — see point_to_page).
-        let field_top = f32::from(cb.origin.y) + nrect.1 * f32::from(cb.size.height);
-        let field_h = nrect.3 * f32::from(cb.size.height);
-        let off = f32::from(self.scroll.offset().y);
-        let (vp_top, vp_bot) = (
-            f32::from(vp.origin.y),
-            f32::from(vp.origin.y) + f32::from(vp.size.height),
-        );
-        const MARGIN: f32 = 56.0;
-        let win_y = field_top + off;
-        let mut new_off = off;
-        if win_y < vp_top + MARGIN {
-            new_off = vp_top + MARGIN - field_top;
-        } else if win_y + field_h > vp_bot - MARGIN {
-            new_off = vp_bot - MARGIN - field_h - field_top;
-        }
-        let max = f32::from(self.scroll.max_offset().y);
-        let new_off = new_off.clamp(-max.max(0.0), 0.0);
-        if (new_off - off).abs() > 0.5 {
-            self.scroll
-                .set_offset(point(self.scroll.offset().x, px(new_off)));
-            cx.notify();
-        }
-        self.field_screen_bounds(field.page, nrect)
-    }
-
-    /// Swap in a new version of the document — e.g. after a form-field write
-    /// rewrote the file — keeping the scroll position, zoom, and view state.
+    /// Swap in a new version of the document, keeping scroll position, zoom,
+    /// and view state.
     /// Re-parses off-thread; pages re-render as they come back on screen.
     pub fn replace_bytes(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         let bytes = Arc::new(bytes);
@@ -998,36 +858,10 @@ impl PdfView {
     #[cfg(feature = "markup")]
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>) {
         self.selecting = !self.selecting;
-        self.area_mode = false;
         self.sel_drag = None;
         // Turning highlight mode on pops the color picker down; off hides it.
         self.palette_open = self.selecting && !self.palette.is_empty();
         cx.notify();
-    }
-
-    /// Toggle "area mode": like highlight mode, but a drag marks a page *region*
-    /// (an image/figure box) instead of selecting text, firing [`CreateAreaFn`]
-    /// on release. Turning it on turns text-highlight mode's selection off (they
-    /// share the pen state); turning either mode off clears the other.
-    /// (`markup` feature.)
-    #[cfg(feature = "markup")]
-    pub fn toggle_area_mode(&mut self, cx: &mut Context<Self>) {
-        if self.selecting && self.area_mode {
-            self.selecting = false;
-            self.area_mode = false;
-        } else {
-            self.selecting = true;
-            self.area_mode = true;
-        }
-        self.sel_drag = None;
-        self.palette_open = self.selecting && !self.palette.is_empty();
-        cx.notify();
-    }
-
-    /// Set the handler invoked when an area (box) drag finishes. (`markup` feature.)
-    #[cfg(feature = "markup")]
-    pub fn set_on_create_area(&mut self, f: CreateAreaFn, _cx: &mut Context<Self>) {
-        self.on_create_area = Some(f);
     }
 
     /// Set the highlight colors the picker offers, as `(label, fill)` pairs. The label
@@ -1112,20 +946,22 @@ impl PdfView {
 
     // ───────────────────────────── Find-in-PDF (search) ─────────────────────────────
 
-    /// Toggle the find bar. On open, extract every page's text (off-thread, cached)
-    /// and compute matches; on close, drop them. (`search` feature.)
+    /// Open/focus the find bar. Extract every page's text off-thread on first open.
+    /// Use [`Self::close_search`] to dismiss it. (`search` feature.)
     #[cfg(feature = "search")]
     pub fn toggle_search(&mut self, cx: &mut Context<Self>) {
-        self.search_open = !self.search_open;
-        if self.search_open {
+        self.search_input_focus = true;
+        #[cfg(feature = "markup")]
+        {
+            self.palette_open = false;
+        }
+        if !self.search_open {
+            self.search_open = true;
             self.ensure_all_text(cx);
             self.recompute_matches(true, cx);
             if let Some(i) = self.current_match {
                 self.goto_match(i, cx);
             }
-        } else {
-            self.matches.clear();
-            self.current_match = None;
         }
         cx.notify();
     }
@@ -1134,6 +970,7 @@ impl PdfView {
     #[cfg(feature = "search")]
     pub fn close_search(&mut self, cx: &mut Context<Self>) {
         self.search_open = false;
+        self.search_input_focus = false;
         self.matches.clear();
         self.current_match = None;
         cx.notify();
@@ -1616,7 +1453,7 @@ impl PdfView {
                 .map(|h| h.page)
                 .filter(|p| (start..=end).contains(p))
                 .collect();
-            if self.selecting && !self.area_mode {
+            if self.selecting {
                 pages.extend(start..=end);
             }
             pages.sort_unstable();
@@ -1696,51 +1533,6 @@ impl PdfView {
                 });
             })
             .detach();
-        }
-    }
-
-    /// One header control button (clickable, hover-highlighted).
-    fn control(
-        &self,
-        id: &'static str,
-        label: impl Into<gpui::SharedString>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let style = (self.style)();
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .justify_center()
-            .min_w(px(20.0))
-            .px(px(6.0))
-            .py(px(1.0))
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .text_color(style.header_fg)
-            .hover(|s| s.bg(style.placeholder_bg))
-            .child(label.into())
-    }
-
-    /// Build a `.tooltip(..)` closure for a header control. gpui core has the tooltip
-    /// *hook* but no tooltip *view* (those live in higher-level UI crates we don't
-    /// depend on), so we render a small themed one ([`Tip`]), reading colors through
-    /// the same style closure at show time.
-    fn tip(
-        &self,
-        text: impl Into<SharedString>,
-    ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-        let style_fn = self.style.clone();
-        let text = text.into();
-        move |_window, cx| {
-            let s = style_fn();
-            let text = text.clone();
-            cx.new(move |_| Tip {
-                text,
-                fg: s.header_fg,
-                bg: s.placeholder_bg,
-                border: s.border,
-            })
-            .into()
         }
     }
 }
@@ -1861,14 +1653,12 @@ impl Render for PdfView {
                         slot = slot.child(hl);
                     }
                 }
-                // Live drag feedback: the raw box in area mode, the text
-                // selection's line rects in highlight mode.
+                // Live text-selection feedback.
                 if let Some((pg, a, b)) = self.sel_drag
                     && pg == i
                 {
-                    let rects: Vec<NormRect> = if self.area_mode {
-                        vec![norm_rect_between(a, b)]
-                    } else if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
+                    let rects: Vec<NormRect> = if let Some(TextSlot::Ready(pt)) =
+                        self.page_text.get(&i)
                         && let Some(sel) = pt.select(a, b)
                     {
                         sel.rects
@@ -1938,299 +1728,13 @@ impl Render for PdfView {
                     );
                 }
             }
-            // Form-field widgets (forms): transparent click targets like links,
-            // with a faint hover so a fillable field reads as interactive. A
-            // click emits FieldClicked with the widget's live window bounds —
-            // the host toggles/seats an input and writes via set_form_value.
-            #[cfg(feature = "forms")]
-            {
-                let (pw_pt, ph_pt) = self.dims[i];
-                for (fi, field) in self.form_fields.iter().enumerate() {
-                    if field.page != i || pw_pt <= 0.0 || ph_pt <= 0.0 {
-                        continue;
-                    }
-                    let (x0, y0, x1, y1) = field.rect;
-                    let (nx, ny) = (x0 / pw_pt, 1.0 - y1 / ph_pt);
-                    let (nw, nh) = ((x1 - x0) / pw_pt, (y1 - y0) / ph_pt);
-                    let f = field.clone();
-                    slot = slot.child(
-                        div()
-                            .id(SharedString::from(format!("pdf-field-{i}-{fi}")))
-                            .absolute()
-                            .left(px(nx * page_width))
-                            .top(px(ny * disp_h))
-                            .w(px(nw * page_width))
-                            .h(px(nh * disp_h))
-                            .rounded(px(2.0))
-                            .cursor_pointer()
-                            .hover(|h| h.bg(hsla(0.25, 0.8, 0.5, 0.12)))
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                if let Some(bounds) =
-                                    this.field_screen_bounds(f.page, (nx, ny, nw, nh))
-                                {
-                                    cx.emit(PdfEvent::FieldClicked {
-                                        field: f.clone(),
-                                        bounds,
-                                    });
-                                }
-                            })),
-                    );
-                }
-            }
             slots.push(slot.into_any_element());
         }
 
-        // Click-to-edit page counter: shows "N / total", or the typed digits while
-        // editing (Enter jumps, Esc cancels — handled in `on_key_down`).
-        let counter_label = match &self.page_input {
-            Some(buf) if !buf.is_empty() => format!("{buf} / {total}"),
-            Some(_) => format!("⌷ / {total}"),
-            None => format!("{} / {total}", current + 1),
-        };
-        let editing = self.page_input.is_some();
-        let counter = div()
-            .id("pdf-page-counter")
-            .min_w(px(78.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(8.0))
-            .py(px(1.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(if editing {
-                style.header_fg
-            } else {
-                style.border
-            })
-            .text_color(style.header_muted)
-            .cursor_pointer()
-            .hover(|s| s.bg(style.placeholder_bg))
-            .child(counter_label)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.page_input.get_or_insert_with(String::new);
-                window.focus(&this.focus, cx);
-                cx.notify();
-            }))
-            .tooltip(self.tip("Go to page (⌘⌥G)"));
-
-        // The table-of-contents toggle sits at the left, next to the title, since the
-        // panel opens on that side. Only shown when the PDF has an outline.
-        let toc_toggle = self.has_outline().then(|| {
-            let toc_bg = if self.toc_open {
-                style.placeholder_bg
-            } else {
-                Hsla { a: 0.0, ..style.bg }
-            };
-            self.control("pdf-toc", "≡")
-                .bg(toc_bg)
-                .on_click(cx.listener(|this, _, _window, cx| this.toggle_toc(cx)))
-                .tooltip(self.tip("Table of contents"))
-        });
-
-        // Header: [☰] filename · N pages … (spacer) … page nav · zoom.
-        let header = div()
-            .flex_shrink_0()
-            .px(px(16.0))
-            .py(px(6.0))
-            .border_b_1()
-            .border_color(style.border)
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .text_size(px(12.0))
-            .text_color(style.header_fg)
-            .children(toc_toggle)
-            .child(format!("📄 {name}"))
-            .child(
-                div()
-                    .text_color(style.header_muted)
-                    .child(format!("· {total} pages")),
-            )
-            .child(div().flex_1())
-            .child(
-                self.control("pdf-prev", "‹")
-                    .on_click(cx.listener(|this, _, _window, cx| this.prev_page(cx)))
-                    .tooltip(self.tip("Previous page (PageUp)")),
-            )
-            .child(counter)
-            .child(
-                self.control("pdf-next", "›")
-                    .on_click(cx.listener(|this, _, _window, cx| this.next_page(cx)))
-                    .tooltip(self.tip("Next page (PageDown)")),
-            )
-            .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
-            .child(
-                self.control("pdf-zoom-out", "−")
-                    .on_click(cx.listener(|this, _, _window, cx| this.zoom_out(cx)))
-                    .tooltip(self.tip("Zoom out (⌘−)")),
-            )
-            .child(
-                self.control(
-                    "pdf-zoom-reset",
-                    format!("{}%", (self.zoom * 100.0).round() as i32),
-                )
-                .on_click(cx.listener(|this, _, _window, cx| this.reset_zoom(cx)))
-                .tooltip(self.tip("Reset zoom (⌘0)")),
-            )
-            .child(
-                self.control("pdf-zoom-in", "+")
-                    .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
-                    .tooltip(self.tip("Zoom in (⌘+)")),
-            )
-            .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
-            .child({
-                let mut c = self
-                    .control("pdf-fit-width", "↔")
-                    .on_click(cx.listener(|this, _, _window, cx| this.fit_width(cx)))
-                    .tooltip(self.tip("Fit width"));
-                if self.fit == Some(FitMode::Width) {
-                    c = c.bg(style.placeholder_bg);
-                }
-                c
-            })
-            .child({
-                let mut c = self
-                    .control("pdf-fit-page", "⤢")
-                    .on_click(cx.listener(|this, _, _window, cx| this.fit_page(cx)))
-                    .tooltip(self.tip("Fit page"));
-                if self.fit == Some(FitMode::Page) {
-                    c = c.bg(style.placeholder_bg);
-                }
-                c
-            });
-
-        // Highlight-mode toggle + color picker (markup): the pen turns drag-to-select
-        // on and pops a palette down; the active color shows as a chip beneath it.
-        #[cfg(feature = "markup")]
-        let header = {
-            let mark_bg = if self.selecting {
-                style.placeholder_bg
-            } else {
-                Hsla { a: 0.0, ..style.bg }
-            };
-            let active = self.active_color_hsla();
-            let pen = div()
-                .id("pdf-mark")
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(1.0))
-                .min_w(px(20.0))
-                .px(px(6.0))
-                .py(px(1.0))
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .text_color(style.header_fg)
-                .bg(mark_bg)
-                .hover(|s| s.bg(style.placeholder_bg))
-                .child("✎")
-                .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
-                .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx)))
-                .tooltip(self.tip("Highlight — pick a color (⌘⇧H)"));
-            // The area (box) tool: same pen state + palette, but a drag marks a
-            // page region instead of selecting text — for figures and scans.
-            let area_bg = if self.selecting && self.area_mode {
-                style.placeholder_bg
-            } else {
-                Hsla { a: 0.0, ..style.bg }
-            };
-            let area = div()
-                .id("pdf-area")
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(1.0))
-                .min_w(px(20.0))
-                .px(px(6.0))
-                .py(px(1.0))
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .text_color(style.header_fg)
-                .bg(area_bg)
-                .hover(|s| s.bg(style.placeholder_bg))
-                .child("⬚")
-                .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
-                .on_click(cx.listener(|this, _, _window, cx| this.toggle_area_mode(cx)))
-                .tooltip(self.tip("Area highlight — drag a box over a region"));
-
-            // Color-picker dropdown, deferred so it paints over the page area below.
-            let dropdown = if self.palette_open && !self.palette.is_empty() {
-                let mut row = div()
-                    .absolute()
-                    .top(px(30.0))
-                    .right(px(0.0))
-                    .flex()
-                    .flex_row()
-                    .gap_1()
-                    .p(px(5.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(style.border)
-                    .bg(style.bg);
-                for (i, (name, color)) in self.palette.iter().enumerate() {
-                    let selected = i == self.active_color;
-                    let color = *color;
-                    row = row.child(
-                        div()
-                            .id(SharedString::from(format!("pdf-swatch-{i}")))
-                            .w(px(16.0))
-                            .h(px(16.0))
-                            .rounded(px(8.0))
-                            .bg(color)
-                            .border_2()
-                            .border_color(if selected {
-                                style.header_fg
-                            } else {
-                                Hsla { a: 0.0, ..style.bg }
-                            })
-                            .cursor_pointer()
-                            .tooltip(self.tip(name.clone()))
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.active_color = i;
-                                this.selecting = true;
-                                this.palette_open = false;
-                                cx.notify();
-                            })),
-                    );
-                }
-                Some(deferred(row))
-            } else {
-                None
-            };
-
-            header.child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_row()
-                    .gap(px(2.0))
-                    .child(pen)
-                    .child(area)
-                    .children(dropdown),
-            )
-        };
-
-        // Find toggle (search): a magnifier that opens the find bar.
-        #[cfg(feature = "search")]
-        let header = {
-            let bg = if self.search_open {
-                style.placeholder_bg
-            } else {
-                Hsla { a: 0.0, ..style.bg }
-            };
-            header.child(
-                self.control("pdf-find", "🔍")
-                    .bg(bg)
-                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_search(cx)))
-                    .tooltip(self.tip("Find (⌘F)")),
-            )
-        };
+        let header = self.render_toolbar(name, current, total, window, cx);
 
         let root = div()
+            .relative()
             .track_focus(&self.focus)
             .size_full()
             .flex()
@@ -2251,50 +1755,27 @@ impl Render for PdfView {
                     }
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &gpui_component::input::Escape, window, cx| {
+                    if this.toolbar_input_focused(window, cx) {
+                        #[cfg(feature = "search")]
+                        if this.search_open {
+                            this.close_search(cx);
+                        }
+                        window.focus(&this.focus, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
                 let key = ev.keystroke.key.as_str();
-                // Page-number entry mode swallows keys until Enter/Esc.
-                if this.page_input.is_some() {
-                    match key {
-                        "escape" => {
-                            this.page_input = None;
-                            cx.notify();
-                        }
-                        "enter" => {
-                            let n = this
-                                .page_input
-                                .as_deref()
-                                .and_then(|s| s.trim().parse::<usize>().ok());
-                            this.page_input = None;
-                            if let Some(n) = n
-                                && !this.dims.is_empty()
-                            {
-                                this.go_to_page(n.saturating_sub(1).min(this.dims.len() - 1), cx);
-                            }
-                            cx.notify();
-                        }
-                        "backspace" => {
-                            if let Some(b) = this.page_input.as_mut() {
-                                b.pop();
-                            }
-                            cx.notify();
-                        }
-                        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_digit()) => {
-                            if let Some(b) = this.page_input.as_mut()
-                                && b.len() < 7
-                            {
-                                b.push_str(k);
-                            }
-                            cx.notify();
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
                 let secondary = ev.keystroke.modifiers.secondary(cx);
-                // ⌘⌥G: jump to a page (focus the page-number field to type into).
+                // ⌘⌥G: focus the native page-number input.
                 if secondary && ev.keystroke.modifiers.alt && key == "g" {
-                    this.page_input.get_or_insert_with(String::new);
+                    this.page_input_focus = true;
                     cx.notify();
                     return;
                 }
@@ -2313,41 +1794,18 @@ impl Render for PdfView {
                         }
                         return;
                     }
-                    // While the bar is open, type to edit the query and Enter/⇧Enter to
-                    // step matches. Keys we don't consume (arrows, PageUp/Down…) fall
-                    // through, so the page still scrolls with the bar open.
-                    if this.search_open {
-                        match key {
-                            "escape" => {
-                                this.close_search(cx);
-                                return;
-                            }
-                            "enter" => {
-                                if ev.keystroke.modifiers.shift {
-                                    this.prev_match(cx);
-                                } else {
-                                    this.next_match(cx);
-                                }
-                                return;
-                            }
-                            "backspace" => {
-                                this.search_query.pop();
-                                this.on_search_query_changed(cx);
-                                return;
-                            }
-                            _ => {
-                                if let Some(ch) =
-                                    ev.keystroke.key_char.as_ref().filter(|s| {
-                                        !s.is_empty() && !s.chars().any(char::is_control)
-                                    })
-                                {
-                                    this.search_query.push_str(ch);
-                                    this.on_search_query_changed(cx);
-                                    return;
-                                }
-                            }
-                        }
+                    if this.search_open && key == "escape" {
+                        this.close_search(cx);
+                        _window.focus(&this.focus, cx);
+                        return;
                     }
+                }
+                if this.toolbar_input_focused(_window, cx) {
+                    if key == "escape" {
+                        _window.focus(&this.focus, cx);
+                        cx.notify();
+                    }
+                    return;
                 }
                 // ⌘⇧H: toggle highlight mode.
                 #[cfg(feature = "markup")]
@@ -2398,14 +1856,6 @@ impl Render for PdfView {
                         cx.notify();
                         return;
                     }
-                    if this.area_mode {
-                        if let Some(cb) = this.on_create_area.clone() {
-                            let color = this.active_color_name();
-                            cb(pg, norm_rect_between(a, b), color, window, cx);
-                        }
-                        cx.notify();
-                        return;
-                    }
                     let sel = match this.page_text.get(&pg) {
                         Some(TextSlot::Ready(pt)) => pt.select(a, b),
                         _ => None,
@@ -2420,93 +1870,9 @@ impl Render for PdfView {
                 }),
             );
 
-        // Find bar overlay (search): a floating bar with the query, match count, and
-        // prev/next/close. Deferred so it paints over the page area below the header.
+        // The find bar floats over the pages; opening it never shifts the document.
         #[cfg(feature = "search")]
-        let root = if self.search_open {
-            let count = if self.search_query.trim().is_empty() {
-                // Empty query: the field already shows the "Find…" placeholder, so the
-                // count reads "0 / 0" rather than repeating it.
-                "0 / 0".to_string()
-            } else if self
-                .page_text
-                .values()
-                .any(|s| matches!(s, TextSlot::Loading))
-            {
-                "searching…".to_string()
-            } else if self.matches.is_empty() {
-                "no results".to_string()
-            } else {
-                format!(
-                    "{} / {}",
-                    self.current_match.map_or(0, |i| i + 1),
-                    self.matches.len()
-                )
-            };
-            let has_query = !self.search_query.is_empty();
-            // Query field with a caret. It's static: a blinking caret would need either a
-            // focused text widget or a per-frame animation that re-renders the whole
-            // viewer; the viewer captures keystrokes directly instead.
-            let field = div()
-                .min_w(px(120.0))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(1.0));
-            let caret = || {
-                div()
-                    .w(px(1.5))
-                    .h(px(13.0))
-                    .rounded(px(1.0))
-                    .bg(style.header_fg)
-            };
-            let field = if has_query {
-                field
-                    .text_color(style.header_fg)
-                    .child(SharedString::from(self.search_query.clone()))
-                    .child(caret())
-            } else {
-                field
-                    .child(caret())
-                    .child(div().text_color(style.header_muted).child("Find…"))
-            };
-            root.child(deferred(
-                div()
-                    .absolute()
-                    .top(px(44.0))
-                    .right(px(12.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(style.border)
-                    .bg(style.bg)
-                    .text_size(px(12.0))
-                    .child(field)
-                    .child(div().text_color(style.header_muted).child(count))
-                    .child(
-                        self.control("pdf-find-prev", "‹")
-                            .on_click(cx.listener(|this, _, _w, cx| this.prev_match(cx)))
-                            .tooltip(self.tip("Previous match (⇧⏎ / ⌘⇧G)")),
-                    )
-                    .child(
-                        self.control("pdf-find-next", "›")
-                            .on_click(cx.listener(|this, _, _w, cx| this.next_match(cx)))
-                            .tooltip(self.tip("Next match (⏎ / ⌘G)")),
-                    )
-                    .child(
-                        self.control("pdf-find-close", "✕")
-                            .on_click(cx.listener(|this, _, _w, cx| this.close_search(cx)))
-                            .tooltip(self.tip("Close (Esc)")),
-                    ),
-            ))
-        } else {
-            root
-        };
+        let root = root.children(self.render_find_bar(window, cx));
 
         // Custom overlay scrollbar: a draggable thumb floating over the viewport's
         // right edge. `None` when the whole document fits (or before first layout), so
@@ -2607,7 +1973,10 @@ impl Render for PdfView {
                     .cursor_pointer()
                     .hover(|s| s.bg(style.placeholder_bg))
                     .child("↑")
-                    .tooltip(self.tip("Scroll to top (Home)"))
+                    .tooltip(|window, cx| {
+                        gpui_component::tooltip::Tooltip::new("Scroll to top (Home)")
+                            .build(window, cx)
+                    })
                     .on_click(cx.listener(|this, _, _window, cx| this.go_to_page(0, cx)))
             })
         };
@@ -2758,36 +2127,6 @@ fn loading(style: PdfStyle) -> impl IntoElement {
         .justify_center()
         .bg(style.bg)
         .child(div().text_color(style.placeholder_fg).child("Loading PDF…"))
-}
-
-/// A minimal themed tooltip view — gpui's `.tooltip()` takes any view, and we don't
-/// pull in a UI crate just for one label.
-struct Tip {
-    text: SharedString,
-    fg: Hsla,
-    bg: Hsla,
-    border: Hsla,
-}
-
-impl Render for Tip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // gpui anchors the tooltip's top-left at the mouse position (+1px), i.e. *inside*
-        // the hovered control. A transparent top padding on the root shifts the visible
-        // box down to clear the control + its bar/header padding. (Padding is applied to
-        // a `layout_as_root` element; a top *margin* on the root is ignored.)
-        div().pt(px(22.0)).child(
-            div()
-                .px(px(6.0))
-                .py(px(2.0))
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(self.border)
-                .bg(self.bg)
-                .text_color(self.fg)
-                .text_size(px(11.0))
-                .child(self.text.clone()),
-        )
-    }
 }
 
 #[cfg(test)]

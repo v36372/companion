@@ -5,6 +5,12 @@ signature, parameters, return contract, edge cases, and cost. For the what-and-w
 (the two layers, quick start, password flow, feature overview), see the
 [README](README.md).
 
+The workspace fork uses the host's initialized gpui-component `Root`/`Theme`
+for toolbar and find controls. Form filling (`forms`, field enumeration/mutation,
+`FieldClicked`) and box-drag creation (`toggle_area_mode`, `set_on_create_area`,
+`CreateAreaFn`) have been removed. Quote highlights and `Highlight.region` payload
+compatibility are retained. See the README for native input shortcuts.
+
 ## Public API at a glance
 
 Everything below is the complete public surface — if it isn't listed here, it isn't
@@ -16,17 +22,9 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`Document`](#type-document) | type alias | — | `type Document = hayro::Pdf` | A parsed PDF, shared via `Arc` |
 | [`LoadError`](#enum-loaderror) | enum | — | `Locked \| Other(String)` | Why loading a PDF failed |
 | [`parse`](#parse) | fn | — | `fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, LoadError>` | Parse PDF bytes once, reuse per page |
-| [`normalize_form_appearances`](#normalize_form_appearances) | fn | `forms` | `fn normalize_form_appearances(bytes: &[u8]) -> Option<Vec<u8>>` | Rewrite form-widget appearances so they render |
-| [`form_fields`](#form_fields) | fn | `forms` | `fn form_fields(bytes: &[u8]) -> Vec<FormField>` | Every form widget: name, kind, page, rect, value |
-| [`set_form_value`](#set_form_value) | fn | `forms` | `fn set_form_value(bytes: &[u8], name: &str, value: &str) -> Option<Vec<u8>>` | Write a field's value + regenerate its appearance |
-| [`FormField`](#struct-formfield) | struct | `forms` | — | One widget, described for a host UI |
-| [`FieldKind`](#enum-fieldkind) | enum | `forms` | `Text \| Checkbox \| Radio \| Choice \| Signature` | What input a field takes |
-| [`PdfView::form_fields`](#pdfviewform_fields) | method | `forms` | `fn form_fields(&self) -> &[FormField]` | The loaded document's fields (Tab order) |
-| [`PdfView::reveal_field`](#pdfviewreveal_field) | method | `forms` | `fn reveal_field(&mut self, field: &FormField, cx) -> Option<Bounds<Pixels>>` | Scroll a field on-screen, return its window bounds |
 | [`PdfView::replace_bytes`](#pdfviewreplace_bytes) | method | — | `fn replace_bytes(&mut self, bytes: Vec<u8>, cx)` | Hot-swap the document (scroll/zoom kept, no blanking) |
 | [`PdfView::set_on_open_external`](#pdfviewset_on_open_external) | method | — | `fn set_on_open_external(&mut self, f: OpenExternalFn)` | Button on the failure pane → host opens the OS viewer |
 | [`OpenExternalFn`](#type-openexternalfn) | type alias | — | `Rc<dyn Fn(&mut Window, &mut App)>` | The failure pane's hand-off callback |
-| `PdfEvent::FieldClicked` | event variant | `forms` | `{ field: FormField, bounds: Bounds<Pixels> }` | A form widget was clicked — toggle or seat an input |
 | [`parse_with_password`](#parse_with_password) | fn | — | `fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str) -> Result<Arc<Document>, LoadError>` | Parse an encrypted PDF |
 | [`page_dims`](#page_dims) | fn | — | `fn page_dims(doc: &Document) -> Vec<(f32, f32)>` | Per-page `(w, h)` in points, no rasterization |
 | [`render_page`](#render_page) | fn | — | `fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderImage>, String>` | Rasterize one page to a BGRA bitmap |
@@ -61,11 +59,9 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PdfView::set_on_highlight`](#pdfviewset_on_highlight) | method | markup | `fn set_on_highlight(&mut self, handler: HighlightClickFn)` | Click handler for a highlight |
 | [`PdfView::set_on_create_highlight`](#pdfviewset_on_create_highlight) | method | markup | `fn set_on_create_highlight(&mut self, handler: CreateHighlightFn)` | Handler for a finished drag-selection |
 | [`PdfView::toggle_select_mode`](#pdfviewtoggle_select_mode) | method | markup | `fn toggle_select_mode(&mut self, cx: &mut Context<Self>)` | Toggle drag-to-highlight mode |
-| [`PdfView::toggle_area_mode`](#pdfviewtoggle_area_mode) | method | markup | `fn toggle_area_mode(&mut self, cx: &mut Context<Self>)` | Toggle drag-a-box area mode |
-| [`PdfView::set_on_create_area`](#pdfviewset_on_create_area) | method | markup | `fn set_on_create_area(&mut self, handler: CreateAreaFn, cx: &mut Context<Self>)` | Handler for a finished area drag |
 | [`PdfView::set_highlight_palette`](#pdfviewset_highlight_palette) | method | markup | `fn set_highlight_palette(&mut self, palette: Vec<(SharedString, Hsla)>, cx: &mut Context<Self>)` | Colors for the picker |
 | [`PdfView::reveal_highlight`](#pdfviewreveal_highlight) | method | markup | `fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>)` | Scroll to a page's highlight and flash it |
-| [`PdfView::toggle_search`](#pdfviewtoggle_search) | method | search | `fn toggle_search(&mut self, cx: &mut Context<Self>)` | Open/close the find bar |
+| [`PdfView::toggle_search`](#pdfviewtoggle_search) | method | search | `fn toggle_search(&mut self, cx: &mut Context<Self>)` | Open/focus the find bar |
 | [`PdfView::close_search`](#pdfviewclose_search) | method | search | `fn close_search(&mut self, cx: &mut Context<Self>)` | Close the find bar, clear matches |
 | [`PdfView::next_match`](#pdfviewnext_match--prev_match) | method | search | `fn next_match(&mut self, cx: &mut Context<Self>)` | Focus the next match (wraps) |
 | [`PdfView::prev_match`](#pdfviewnext_match--prev_match) | method | search | `fn prev_match(&mut self, cx: &mut Context<Self>)` | Focus the previous match (wraps) |
@@ -77,7 +73,6 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`Highlight`](#struct-highlight) | struct | markup | `{ id: u64, page: usize, quote: String, occurrence: usize, color: Hsla }` | A quote-anchored highlight to draw |
 | [`HighlightClickFn`](#type-highlightclickfn) | type alias | markup | `Rc<dyn Fn(u64, &mut Window, &mut App)>` | Highlight click callback |
 | [`CreateHighlightFn`](#type-createhighlightfn) | type alias | markup | `Rc<dyn Fn(usize, String, usize, SharedString, &mut Window, &mut App)>` | Drag-selection-finished callback |
-| [`CreateAreaFn`](#type-createareafn) | type alias | markup | `Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut App)>` | Area-drag-finished callback |
 | [`NormRect`](#struct-normrect) | struct | markup | `{ x, y, w, h: f32 }` | Rect in normalized (0..1) page coords |
 | [`NormPoint`](#struct-normpoint) | struct | markup | `{ x, y: f32 }` | Point in normalized page coords |
 | [`Selection`](#struct-selection) | struct | markup | `{ quote: String, occurrence: usize, rects: Vec<NormRect> }` | A resolved drag selection |
@@ -199,10 +194,6 @@ otherwise.
 - Anything else — public-key / certificate handlers (`/Filter` ≠ `/Standard`), any
   non-standard crypt filter — surfaces as `Err(Other)`, **not** `Locked`: don't show
   a password prompt for it.
-- With the `forms` feature, the bytes first pass through
-  [`normalize_form_appearances`](#normalize_form_appearances) (both here and in
-  [`parse`](#parse)) so form values and checkbox states display; an encrypted or
-  form-free file passes through untouched.
 - Never panics.
 
 **Example**
@@ -217,202 +208,13 @@ match gpui_pdf::parse_with_password(bytes, password) {
 
 ---
 
-## `normalize_form_appearances`
-
-*Feature: `forms`.*
-
-```rust
-pub fn normalize_form_appearances(bytes: &[u8]) -> Option<Vec<u8>>
-```
-
-Rewrite a document's bytes so every AcroForm widget has a directly-renderable
-appearance stream. hayro composites annotation `/AP /N` streams but (a) skips a
-checkbox/radio whose `/N` is a **dictionary of states** selected by `/AS`, and
-(b) never **synthesizes** an appearance for a valued text field that has none
-(the `NeedAppearances` case). This pass fixes both at the byte level — resolve
-`/N` through `/AS`; synthesize a Helvetica appearance for the field's `/V` —
-so form PDFs *display* what they carry. [`parse`](#parse) /
-[`parse_with_password`](#parse_with_password) call it automatically under this
-feature; it's public for hosts that manage bytes themselves.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `bytes` | `&[u8]` | The whole file's bytes. |
-
-**Returns** — `Some(rewritten_bytes)` **only when something changed**; `None`
-means keep the originals (no form widgets, nothing to fix, an encrypted file,
-or bytes lopdf can't parse).
-
-**Guarantees & edge cases**
-
-- Idempotent: running it on its own output returns `None`.
-- Encrypted documents are left untouched (`None`) — hayro decrypts on its own;
-  rewriting would need the password.
-- `/FT` and `/V` are resolved up the `/Parent` chain (split field/widget
-  pairs), bounded against cyclic chains.
-- Synthesized text is single-line, left-aligned, ~12 pt Helvetica
-  (WinAnsi-lossy: characters outside Latin-1 become `?`), clipped to the
-  widget rect by the XObject's BBox. `/DA` fonts, `/Q` quadding, comb fields,
-  multiline layout, and rich-text values are **not** honored — this is display
-  correctness, not a form engine.
-- Only `/AP /N` (the normal appearance) is touched; `/D`/`/R` states and
-  non-widget annotations pass through unchanged.
-- Never panics; any structural surprise inside a widget just skips that widget.
-
-**Cost** — a full lopdf parse + serialize when changes are made (one-time, at
-load). A document with no `/Subtype /Widget` objects short-circuits after the
-parse.
-
----
-
-## `form_fields`
-
-*Feature: `forms`.*
-
-```rust
-pub fn form_fields(bytes: &[u8]) -> Vec<FormField>
-```
-
-Every form-field widget in the document, in page order — what a host needs to
-overlay inputs on the viewer.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `bytes` | `&[u8]` | The whole file's bytes. |
-
-**Returns** — one [`FormField`](#struct-formfield) per *widget* (a radio group
-is one field name across several widgets, each reported with its own rect and
-on-state). Pushbuttons carry no value and are skipped.
-
-**Guarantees & edge cases**
-
-- An encrypted or unparseable file yields an empty `Vec` — never an error.
-- `rect` is in PDF points with a bottom-left origin, corners normalized
-  (`x0 < x1`, `y0 < y1`); to overlay on a rendered page, flip y against the
-  page height and multiply by the render scale.
-- Names are fully qualified (`/T` joined root-first with `.` up the `/Parent`
-  chain) — exactly the key [`set_form_value`](#set_form_value) expects.
-- `/FT`, `/V`, `/Ff`, and `/Opt` resolve through field inheritance.
-
----
-
-## `set_form_value`
-
-*Feature: `forms`.*
-
-```rust
-pub fn set_form_value(bytes: &[u8], name: &str, value: &str) -> Option<Vec<u8>>
-```
-
-Set the field named `name` and **regenerate its appearance stream**, so the
-written file renders correctly in every viewer — not just this crate's.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `bytes` | `&[u8]` | The whole file's bytes. |
-| `name` | `&str` | A fully-qualified name from [`form_fields`](#form_fields). |
-| `value` | `&str` | `Text`/`Choice`: the literal text. `Checkbox`/`Radio`: an on-state from [`FormField::options`](#struct-formfield), or `"Off"` to clear. |
-
-**Returns** — `Some(rewritten_bytes)` on success; `None` when nothing matched
-(unknown name, read-only or signature field, encrypted/unparseable file).
-
-**Guarantees & edge cases**
-
-- `/V` is written on the dict that owns `/FT` (the parent for split
-  field/widget pairs), so sibling widgets stay consistent; a radio group's
-  every widget gets its `/AS` set (`value` where that widget carries the
-  state, `Off` elsewhere).
-- Text appearances are regenerated with the same synthesis as
-  [`normalize_form_appearances`](#normalize_form_appearances) — same ceilings
-  (single-line, WinAnsi-lossy).
-- Read-only fields (`/Ff` bit 1) and signature fields are refused.
-- The caller owns persistence: write the returned bytes wherever the document
-  lives, and re-[`parse`](#parse) to refresh a viewer.
-
----
-
-## `struct FormField`
-
-*Feature: `forms`.*
-
-```rust
-pub struct FormField {
-    pub name: String,           // fully-qualified field name (the set_form_value key)
-    pub kind: FieldKind,
-    pub page: usize,            // 0-based page index
-    pub rect: (f32, f32, f32, f32), // PDF points, bottom-left origin, corners ordered
-    pub value: String,          // text, or the on-state name / "Off" for buttons
-    pub read_only: bool,        // /Ff bit 1
-    pub options: Vec<String>,   // Choice: /Opt entries; Checkbox/Radio: on-state names
-}
-```
-
-One widget, described for a host UI. See [`form_fields`](#form_fields) for the
-coordinate and naming contracts.
-
----
-
-## `enum FieldKind`
-
-*Feature: `forms`.*
-
-```rust
-pub enum FieldKind { Text, Checkbox, Radio, Choice, Signature }
-```
-
-What input a field takes. `Radio` is one widget of a group (same `name`,
-several widgets). `Signature` is display-only — [`set_form_value`](#set_form_value)
-refuses it. Pushbuttons never appear (no value to hold).
-
----
-
-## `PdfView::form_fields`
-
-*Feature: `forms`.*
-
-```rust
-pub fn form_fields(&self) -> &[FormField]
-```
-
-The loaded document's form fields, enumerated at load from the original bytes
-(not the display-normalized ones) — for a host driving Tab navigation. The
-order is [`form_fields`](#form_fields)' page-then-document order. Empty before
-the load finishes and for form-free documents.
-
----
-
-## `PdfView::reveal_field`
-
-*Feature: `forms`.*
-
-```rust
-pub fn reveal_field(&mut self, field: &FormField, cx: &mut Context<Self>) -> Option<Bounds<Pixels>>
-```
-
-Scroll so `field`'s widget sits comfortably on-screen (a 56 px margin), then
-return its fresh window-space bounds — what a host needs to seat an input on a
-field reached by Tab rather than by click. `None` before the first layout.
-Every form widget is rendered as a transparent overlay with a hover tint and a
-pointer cursor; clicking one emits `PdfEvent::FieldClicked` with the same
-bounds shape.
-
----
-
 ## `PdfView::replace_bytes`
 
 ```rust
 pub fn replace_bytes(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>)
 ```
 
-Swap in a new version of the document — e.g. after
-[`set_form_value`](#set_form_value) rewrote the file — keeping scroll, zoom,
-and view state. Re-parses off-thread. When the page count is unchanged, the
+Swap in a new version of the document, keeping scroll, zoom, and view state. Re-parses off-thread. When the page count is unchanged, the
 old page bitmaps keep painting until their crisp replacements land (the same
 no-blanking swap as zoom/quality changes); a different page count resets the
 slots. Highlights' cached text layers are dropped and rebuilt lazily. A parse
@@ -645,7 +447,7 @@ freed — CPU pixel buffer *and* GPU atlas texture — so memory is bounded by w
 screen, not the page count.
 
 Built-in chrome: a header with the filename, page navigation (‹ / ›, a
-click-to-edit page counter you can type a number into), zoom controls (−, %, +), a
+native page-number input), zoom controls (−, %, +), a
 table-of-contents side panel (when the PDF has an outline), clickable link
 annotations overlaid on each page (internal → jump to page, external →
 `cx.open_url`, http(s) only — see [`LinkTarget`](#enum-linktarget)), an overlay
@@ -654,7 +456,7 @@ highlight pen + color picker; with `search`: a find bar (🔍).
 
 Keyboard shortcuts (handled when the viewer is focused — it focuses itself on
 click): PageUp / PageDown / Home / End navigate; ⌘= / ⌘- / ⌘0 zoom; ⌘⌥G jumps to a
-page; ⌘⇧H toggles highlight mode (`markup`); ⌘F toggles find and ⌘G / ⌘⇧G step
+page; ⌘⇧H toggles highlight mode (`markup`); Cmd/Ctrl-F focuses find and ⌘G / ⌘⇧G step
 matches (`search`). "⌘" is the platform secondary modifier (Ctrl elsewhere).
 
 Each `PdfView` owns its own scroll handle, zoom, and document, so multiple viewers
@@ -1023,46 +825,6 @@ cancels any in-progress selection and hides the picker. While on, every visible
 page extracts its text layer so drags can select anywhere. Also bound to ⌘⇧H.
 **Parameters** — `cx` only.
 
-### `PdfView::toggle_area_mode`
-
-*(`markup` feature)*
-
-```rust
-pub fn toggle_area_mode(&mut self, cx: &mut Context<Self>)
-```
-
-Toggle "area mode": like highlight mode, but a drag marks a rectangular page
-*region* (a figure, a scanned paragraph) instead of selecting text, firing
-[`CreateAreaFn`](#type-createareafn) on release — no text layer involved, so it
-works on pages with none. The header shows it as the `⬚` tool beside the pen;
-they share the color picker, and turning either mode on turns the other off.
-**Parameters** — `cx` only.
-
-### `PdfView::set_on_create_area`
-
-*(`markup` feature)*
-
-```rust
-pub fn set_on_create_area(&mut self, handler: CreateAreaFn, cx: &mut Context<Self>)
-```
-
-Set the handler invoked when an area (box) drag finishes. Without one, the drag
-draws feedback but nothing is stored.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `handler` | [`CreateAreaFn`](#type-createareafn) | Receives `(page, rect, color_label, &mut Window, &mut App)`; `rect` is normalized page coords. |
-| `cx` | `&mut Context<Self>` | — |
-
-**Guarantees & edge cases**
-
-- The same minimum-drag threshold as text highlights applies (a bare click never
-  creates one).
-- The rect is normalized against the page the drag *started* on; a drag that
-  leaves the page clamps to the last position over it.
-
 ### `PdfView::set_highlight_palette`
 
 *(`markup` feature)*
@@ -1124,12 +886,12 @@ page's highlights (brighter fill + outline for ~1.2 s) so the eye finds them.
 pub fn toggle_search(&mut self, cx: &mut Context<Self>)
 ```
 
-Toggle the find-in-PDF bar (also bound to ⌘F). Opening kicks off text extraction
+Open/focus the find-in-PDF bar (also bound to Cmd/Ctrl-F). Opening kicks off text extraction
 for **every page** of the document (off-thread, cached — subsequent opens are
 instant) and computes matches for the current query; the match list refreshes once
 the last page's text lands. Closing clears the matches. The query is typed
-directly into the bar (the viewer captures keystrokes while it's open); Enter /
-⇧Enter and ⌘G / ⌘⇧G step matches. A fresh query starts from the page currently
+into a native `Input` (IME, clipboard and text editing supported); Enter /
+Shift-Enter and Cmd/Ctrl-G / Cmd/Ctrl-Shift-G step matches. The count reads `3/17`. A fresh query starts from the page currently
 being read, not the document top. **Parameters** — `cx` only.
 
 ### `PdfView::close_search`
@@ -1364,21 +1126,6 @@ Install via [`PdfView::set_on_create_highlight`](#pdfviewset_on_create_highlight
 
 ---
 
-## `type CreateAreaFn`
-
-*(`markup` feature)*
-
-```rust
-pub type CreateAreaFn = Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut App)>;
-```
-
-Invoked when a box-drag finishes in area mode: the page (0-based), the dragged
-rect in normalized page coordinates, and the active palette color's label. The
-host stores it and hands it back as a [`Highlight`](#struct-highlight) with
-`region` set.
-
----
-
 ## `struct NormRect`
 
 *(`markup` feature)*
@@ -1492,7 +1239,7 @@ pub fn is_empty(&self) -> bool
 ```
 
 Whether the page has any extractable text — `true` for pure scans with no OCR
-layer (the host should then fall back to area markup). **Parameters** — none
+layer (OCR is not implemented). **Parameters** — none
 (`&self`).
 
 ### `PageText::text`

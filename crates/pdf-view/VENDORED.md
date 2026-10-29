@@ -15,3 +15,7 @@
 The examples are copied unchanged. The manifest uses this repository's workspace
 dependencies and disables publishing. The upstream
 Cargo.lock and rust-toolchain.toml are not included.
+
+- Viewer toolbar/find bar: gpui-component buttons, native inputs, themed chrome and
+  an attached highlight palette popover; removed unused forms/lopdf and box-drag
+  area creation while preserving quote highlights and host navigation APIs.

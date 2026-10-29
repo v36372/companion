@@ -9,8 +9,8 @@ Windows.
 
 Use the ready-made `PdfView`, which handles loading, scrolling, rendering, and
 memory on its own, or build your own viewer on the lower-level functions
-(`parse`, `page_dims`, `render_page`, `keep_window`). Text search, highlights,
-and fillable forms are optional features.
+(`parse`, `page_dims`, `render_page`, `keep_window`). Text search and quote
+highlights are optional features. Form filling and box-drag area mode are not supported.
 
 The complete API reference is in [API.md](API.md).
 
@@ -22,7 +22,7 @@ The complete API reference is in [API.md](API.md).
   buffer *and* GPU atlas texture — so an 800-page document stays as light as a
   one-pager.
 - **Zoom & navigation, no flicker.** Built-in zoom and page navigation (header
-  controls, a click-to-edit page counter, keyboard shortcuts, a scroll-to-top
+  controls, a native page-number input, keyboard shortcuts, a scroll-to-top
   button). On a zoom or quality change the page never blanks — the current bitmap
   stays on screen, rescaled, until the crisp re-render lands.
 - **Off-thread everything.** The file is read, parsed *once*, and measured on a
@@ -38,22 +38,20 @@ The complete API reference is in [API.md](API.md).
 - **Outline & links.** A table-of-contents side panel from the document's outline,
   and clickable link annotations (internal → jump to page, external → open URL),
   both also exposed as plain functions (`outline`, `page_links`) for custom UIs.
-- **Theme-reactive.** Colors come from a closure read at paint time, so the viewer
-  follows live theme changes (and can differ per window) with no push from the host.
+- **Theme-reactive.** The toolbar and find bar use gpui-component widgets and the
+  host's `Root`/`Theme`. Page/placeholder styling still comes from `PdfStyleFn`.
+  Initialize gpui-component and icon assets in the host before rendering the viewer.
 
 ## Adding the dependency
 
-Published on [crates.io](https://crates.io/crates/gpui-pdf):
+This is the workspace-vendored fork (see [VENDORED.md](VENDORED.md)):
 
 ```toml
 [dependencies]
-gpui-pdf = "0.6"
-
 # Optional features:
 #   markup — text layer + quote-anchored highlights (adds only `kurbo`)
 #   search — find-in-PDF bar; implies markup
-#   forms  — AcroForm values/checkboxes display correctly (adds `lopdf`)
-gpui-pdf = { version = "0.6", features = ["search", "forms"] }
+gpui-pdf = { path = "crates/pdf-view", features = ["search"] }
 ```
 > **gpui version:** the crate depends on GPUI as published on crates.io — the
 > `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
@@ -105,32 +103,27 @@ for clicks and drag-to-create (with a color picker). Coordinates are normalized,
 highlights track zoom and DPI for free. `search` builds a browser-style find-in-PDF
 bar (⌘F, match highlighting, next/prev) on the same text layer.
 
-## Forms (optional feature)
+## Toolbar and find
 
-`forms` makes **AcroForm PDFs display correctly**: filled values, checked
-checkboxes, and radio states render read-only. hayro already composites
-annotation appearance streams; this feature normalizes the two shapes it can't
-draw — checkbox/radio state-dictionary appearances (resolved through `/AS`) and
-valued text fields with no appearance at all (the `NeedAppearances` case, given
-a synthesized one) — by rewriting the bytes with `lopdf` before parsing. It
-happens automatically inside `parse`.
+The fixed-height toolbar provides outline, page jump (1-based, Enter to commit,
+Esc to cancel), zoom/reset, fit width/page, selection and text highlighting.
+The pen opens an attached palette popover; it stays below the find-bar lane when
+both are open. Neither overlay changes the document's layout.
 
-The same feature makes forms **fillable through the viewer**: every widget
-renders as a hoverable click target, and a click emits
-`PdfEvent::FieldClicked` with the field's description + window bounds — the
-host toggles the checkbox or seats its own text input there (the same
-host-owns-the-input pattern as the password prompt), writes through
-`set_form_value` (value + regenerated appearance, so the file renders in any
-viewer), and hot-swaps the document with `PdfView::replace_bytes` (scroll and
-zoom kept, no blanking). `form_fields` / `reveal_field` drive Tab-through-the-
-form navigation. A `forms_check` example reports any PDF's widget shapes.
+**Cmd/Ctrl-F** opens/focuses the native find input, including IME, selection and
+clipboard support. The counter reads `3/17`; **Enter / Shift-Enter** cycle matches,
+**Cmd/Ctrl-G / Cmd/Ctrl-Shift-G** also cycle, and **Esc** closes. PageUp/PageDown
+remain viewer navigation shortcuts when no native input is focused.
+
+The unused `forms` feature, form mutation/event APIs, and `toggle_area_mode` /
+`set_on_create_area` / `CreateAreaFn` have been removed. `Highlight.region` remains
+accepted for existing host payload compatibility; there is no box-drag creation tool.
 
 ## Status
 
 Early, but solid for scroll-to-read viewing. Password-protected PDFs open behind a
-host-rendered prompt. Markup, find-in-PDF, and forms (display + filling) are
-available behind their features. Roadmap: area highlights for pages with no
-text layer; choice-field dropdowns.
+host-rendered prompt. Markup and find-in-PDF are available behind their features.
+Scanned pages have no selectable text; OCR and form filling are out of scope.
 
 ## License
 
