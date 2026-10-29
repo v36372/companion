@@ -951,23 +951,13 @@ impl Render for CompanionWindow {
         let disabled_reason = self.bridge.unavailable_reason();
         let status = crate::orb::agent_status(&self.bridge, self.surface_open, self.unread);
         self.orb.update(cx, |orb, cx| {
-            let label = if status == crate::orb::AgentStatus::Blocked {
-                if matches!(
-                    self.bridge.availability,
-                    crate::agent_bridge::Availability::NoKey
-                ) {
-                    "Needs an OpenRouter key".to_owned()
-                } else {
-                    self.bridge
-                        .unavailable_reason()
-                        .unwrap_or_else(|| "Retry parked task".into())
-                }
-            } else {
-                status.label().to_owned()
-            };
+            let label = crate::orb::tooltip_label(&self.bridge, status).to_owned();
             if orb.status != status || orb.label != label || orb.surface_open != self.surface_open {
                 orb.status = status;
                 orb.label = label;
+                if orb.surface_open != self.surface_open {
+                    orb.surface_bounds = Default::default();
+                }
                 orb.surface_open = self.surface_open;
                 cx.notify();
             }
@@ -1060,6 +1050,22 @@ impl Render for CompanionWindow {
                         .on_click(cx.listener(|this, _, window, cx| this.pick_pdf(window, cx))),
                 ),
         };
+        let center = center.child({
+            let orb = self.orb.clone();
+            gpui::canvas(
+                |_, _, _| (),
+                move |bounds, _, _, cx| {
+                    orb.update(cx, |orb, cx| {
+                        if orb.reader_bounds != bounds {
+                            orb.reader_bounds = bounds;
+                            cx.notify();
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .inset_0()
+        });
         // All transient reader UI is absolute: selections and scans never change
         // the viewer's available height or invalidate its page layout.
         let center = center.child(
@@ -1282,8 +1288,11 @@ impl Render for CompanionWindow {
                                             gpui::canvas(
                                                 |_, _, _| (),
                                                 move |bounds, _, _, cx| {
-                                                    orb.update(cx, |orb, _| {
-                                                        orb.surface_bounds = bounds
+                                                    orb.update(cx, |orb, cx| {
+                                                        if orb.surface_bounds != bounds {
+                                                            orb.surface_bounds = bounds;
+                                                            cx.notify();
+                                                        }
                                                     });
                                                 },
                                             )

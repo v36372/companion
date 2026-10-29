@@ -39,6 +39,17 @@ pub fn agent_status(bridge: &Bridge, surface_open: bool, unread: bool) -> AgentS
     }
 }
 
+pub fn tooltip_label(bridge: &Bridge, status: AgentStatus) -> &'static str {
+    match bridge.availability {
+        Availability::NoKey => "Needs an OpenRouter key",
+        Availability::KeyError(_) => "Key lookup failed",
+        Availability::Failed(_) => "Agent unavailable",
+        _ if status == AgentStatus::Blocked && bridge.parked_task.is_some() => "Retry parked task",
+        _ if status == AgentStatus::Blocked => crate::chat::status_label(bridge),
+        _ => status.label(),
+    }
+}
+
 impl AgentStatus {
     pub fn label(self) -> &'static str {
         match self {
@@ -68,6 +79,21 @@ pub fn follow_target(pointer: [f32; 2], bounds: [f32; 2]) -> [f32; 2] {
         next.clamp(0., (bounds[i] - 32.).max(0.))
     })
 }
+/// Region is [left, top, width, height], in window coordinates.
+pub fn constrain(position: [f32; 2], region: [f32; 4]) -> [f32; 2] {
+    std::array::from_fn(|i| position[i].clamp(region[i], region[i] + (region[i + 2] - 32.).max(0.)))
+}
+pub fn follow_in_region(pointer: [f32; 2], region: [f32; 4]) -> [f32; 2] {
+    let local = follow_target(
+        [pointer[0] - region[0], pointer[1] - region[1]],
+        [region[2], region[3]],
+    );
+    [local[0] + region[0], local[1] + region[1]]
+}
+pub fn dock_in_region(region: [f32; 4]) -> [f32; 2] {
+    std::array::from_fn(|i| region[i] + (region[i + 2] - 56.).max(0.))
+}
+
 pub fn caught(pointer: [f32; 2], position: [f32; 2]) -> bool {
     (pointer[0] - position[0] - 16.).hypot(pointer[1] - position[1] - 16.) <= 34.
 }
@@ -94,6 +120,7 @@ pub struct Orb {
     pub label: String,
     pub surface_open: bool,
     pub surface_bounds: gpui::Bounds<gpui::Pixels>,
+    pub reader_bounds: gpui::Bounds<gpui::Pixels>,
     position: Option<[f32; 2]>,
     pointer: Option<[f32; 2]>,
     dragging: bool,
@@ -129,6 +156,7 @@ impl Orb {
             label: "Agent off".into(),
             surface_open: false,
             surface_bounds: Default::default(),
+            reader_bounds: Default::default(),
             position: None,
             pointer: None,
             dragging: false,
@@ -238,9 +266,39 @@ impl Render for Orb {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         let bounds = [f32::from(size.width), f32::from(size.height)];
-        let dock = [(bounds[0] - 56.).max(0.), (bounds[1] - 56.).max(0.)];
+        let region = if self.surface_open {
+            let reader = self.reader_bounds;
+            let left = f32::from(reader.origin.x);
+            let top = f32::from(reader.origin.y);
+            // Until the newly opened panel paints, reserve its default 45% so
+            // even the first frame cannot dock over the composer.
+            let chat_left = if self.surface_bounds.origin.x > px(0.) {
+                f32::from(self.surface_bounds.origin.x)
+            } else {
+                bounds[0] * 0.55
+            };
+            let right = (if reader.size.width > px(0.) {
+                f32::from(reader.right()).min(chat_left)
+            } else {
+                chat_left
+            })
+            .min((bounds[0] - 420.).max(0.));
+            [
+                left,
+                top,
+                (right - left).max(0.),
+                if reader.size.height > px(0.) {
+                    f32::from(reader.size.height)
+                } else {
+                    bounds[1]
+                },
+            ]
+        } else {
+            [0., 0., bounds[0], bounds[1]]
+        };
+        let dock = dock_in_region(region);
         let previous = self.position.unwrap_or(dock);
-        let position = std::array::from_fn(|i| previous[i].clamp(0., (bounds[i] - 32.).max(0.)));
+        let position = constrain(previous, region);
         let catch = self
             .pointer
             .is_some_and(|pointer| caught(pointer, position));
@@ -248,7 +306,7 @@ impl Render for Orb {
             position
         } else {
             self.pointer
-                .map(|p| follow_target(p, bounds))
+                .map(|p| follow_in_region(p, region))
                 .unwrap_or(dock)
         };
         let now = Instant::now();
@@ -379,6 +437,21 @@ mod tests {
         b.notices.push("task_faulted: provider failure".into());
         assert_eq!(agent_status(&b, false, false), AgentStatus::Error);
     }
+    #[test]
+    fn open_surface_bounds_keep_follow_and_dock_in_reader() {
+        let reader = [240., 48., 530., 852.]; // Chat starts at x=770.
+        assert_eq!(dock_in_region(reader), [714., 844.]);
+        for pointer in [[0., 0.], [600., 500.], [1000., 880.], [1400., 900.]] {
+            let target = follow_in_region(pointer, reader);
+            assert!(target[0] >= 240. && target[0] + 32. <= 770.);
+            assert!(target[1] >= 48. && target[1] + 32. <= 900.);
+        }
+        assert_eq!(constrain([1344., 844.], reader), [738., 844.]);
+        let mut b = Bridge::off();
+        b.availability = Availability::KeyError("a very long credential error".into());
+        assert_eq!(tooltip_label(&b, AgentStatus::Error), "Key lookup failed");
+    }
+
     #[test]
     fn motion_converges_without_overshoot_and_settles() {
         let mut p = [0., 0.];

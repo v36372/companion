@@ -74,5 +74,11 @@ pub fn column(
                     }))
                 .child(Button::new("close-chat").ghost().small().label("×").tooltip("Close conversation (Ctrl/Cmd-J)").on_click(close))))
         .when(matches!(bridge.availability, Availability::NoKey) && bridge.transcript.is_empty(), |el| el.child(key_card()))
+        .children(match &bridge.availability {
+            Availability::KeyError(reason) | Availability::Failed(reason) => Some(
+                div().px_3().py_2().text_sm().text_color(cx.theme().muted_foreground).child(reason.clone())
+            ),
+            _ => None,
+        })
         .child(div().flex_1().min_h_0().child(crate::chat::pane(bridge, composer, viewer, scroll, navigate, retry, cx)))
 }
