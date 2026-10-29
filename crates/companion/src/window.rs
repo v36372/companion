@@ -22,7 +22,7 @@ use companion_pdf::{
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
 use gpui::{Context, Entity, FocusHandle, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, WindowExt,
+    ActiveTheme, Disableable, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     notification::Notification,
     resizable::{h_resizable, resizable_panel},
@@ -53,6 +53,7 @@ pub struct CompanionWindow {
     navigation: HashMap<String, (ReadingProgress, Arc<AtomicU64>)>,
     error: Option<String>,
     selection: Option<(LiveSelection, String)>,
+    selection_bar_open: bool,
     bridge: Bridge,
     composer: Entity<AskBar>,
     password_bar: Entity<AskBar>,
@@ -204,6 +205,7 @@ impl CompanionWindow {
             navigation: HashMap::new(),
             error,
             selection: None,
+            selection_bar_open: false,
             bridge,
             composer,
             password_bar,
@@ -533,6 +535,14 @@ impl CompanionWindow {
                         snapshot.record_scroll_navigation(page_0, *scroll_frac);
                     }
                     cx.notify();
+                } else if matches!(event, gpui_pdf::PdfEvent::SelectionCleared) {
+                    this.selection = None;
+                    this.selection_bar_open = false;
+                    if let Some(snapshot) = this.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref())
+                    {
+                        *snapshot.selection.write().unwrap() = None;
+                    }
+                    cx.notify();
                 } else if matches!(event, gpui_pdf::PdfEvent::LockChanged) {
                     this.password_open = viewer.read(cx).is_locked();
                     this.password_focus_pending = this.password_open;
@@ -791,6 +801,7 @@ impl CompanionWindow {
             .and_then(|page| page.text.as_deref())
             .unwrap_or_default();
         self.selection = Some((live_selection(page_0, text, quote, occurrence), color));
+        self.selection_bar_open = true;
         // Selection identifies the page without moving the viewport under the drag.
         self.page_0 = page_0;
         self.persist_navigation(
@@ -804,6 +815,18 @@ impl CompanionWindow {
         cx.notify();
     }
 
+    fn dismiss_selection(&mut self, cx: &mut Context<Self>) {
+        self.selection = None;
+        self.selection_bar_open = false;
+        if let Some(pdf) = &self.pdf {
+            if let Some(snapshot) = &pdf.snapshot {
+                *snapshot.selection.write().unwrap() = None;
+            }
+            pdf.clear_selection(cx);
+        }
+        cx.notify();
+    }
+
     fn ask_selection(&mut self, cx: &mut Context<Self>) {
         if let Some((selection, _)) = &self.selection {
             if !self.bridge.submit("Explain this passage.".into(), Some(serde_json::json!({
@@ -813,6 +836,7 @@ impl CompanionWindow {
                 cx.notify();
                 return;
             }
+            self.selection_bar_open = false;
             cx.notify();
         }
     }
@@ -833,7 +857,10 @@ impl CompanionWindow {
             conversation_entry_id: None,
         };
         match catalog.insert_highlight(&highlight) {
-            Ok(_) => self.restore_highlights(cx),
+            Ok(_) => {
+                self.restore_highlights(cx);
+                self.dismiss_selection(cx);
+            }
             Err(error) => self.error = Some(format!("Cannot save highlight: {error:#}")),
         }
         cx.notify();
@@ -1020,50 +1047,76 @@ impl Render for CompanionWindow {
                             "Page {} has no text. OCR is not available.",
                             page_0_to_1(self.page_0)
                         ))
-                }))
-                .children(self.selection.as_ref().map(|(selection, _)| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(spacing.sm)
-                        .p(spacing.sm)
-                        .rounded(radius)
-                        .bg(cx.theme().popover)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .shadow_md()
-                        .flex_wrap()
-                        .child(format!("Selection · page {}", selection.page))
-                        .child(
-                            Button::new("ask-selection")
-                                .primary()
-                                .label("Ask")
-                                .disabled(!can_chat)
-                                .tooltip(
-                                    disabled_reason
-                                        .clone()
-                                        .unwrap_or_else(|| "Explain this passage".into()),
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.ask_selection(cx))),
-                        )
-                        .child(
-                            Button::new("highlight-selection")
-                                .outline()
-                                .label("Highlight")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.highlight_selection(cx)),
-                                ),
-                        )
-                        .child(
-                            Button::new("dismiss-selection")
-                                .ghost()
-                                .label("Dismiss")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.selection = None;
-                                    cx.notify();
-                                })),
-                        )
                 })),
+        );
+        let center = center.children(
+            self.selection
+                .as_ref()
+                .filter(|_| self.selection_bar_open)
+                .and_then(|(selection, color)| {
+                    let pdf = self.pdf.as_ref()?;
+                    let (anchor, reader) = pdf.selection_geometry(cx);
+                    let position = crate::selection_bar::position(anchor, reader);
+                    Some(gpui::deferred(
+                        gpui::anchored().position(position).child(
+                            div()
+                                .w(px(210.))
+                                .h(px(40.))
+                                .flex()
+                                .items_center()
+                                .gap(spacing.sm)
+                                .p(spacing.sm)
+                                .rounded(radius)
+                                .bg(cx.theme().popover)
+                                .text_color(cx.theme().popover_foreground)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .shadow_md()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .child(
+                                    Button::new("ask-selection")
+                                        .small()
+                                        .primary()
+                                        .label("Ask")
+                                        .disabled(!can_chat)
+                                        .tooltip(disabled_reason.clone().unwrap_or_else(|| {
+                                            format!("Explain selection on page {}", selection.page)
+                                        }))
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.ask_selection(cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("highlight-selection")
+                                        .small()
+                                        .outline()
+                                        .label("Highlight")
+                                        .border_color(companion_pdf::highlight_color(color))
+                                        .tooltip(format!(
+                                            "Highlight selection on page {}",
+                                            selection.page
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.highlight_selection(cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("dismiss-selection")
+                                        .small()
+                                        .ghost()
+                                        .icon(IconName::Close)
+                                        .tooltip("Dismiss selection")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.dismiss_selection(cx)
+                                            }),
+                                        ),
+                                ),
+                        ),
+                    ))
+                }),
         );
 
         div()
@@ -1088,12 +1141,17 @@ impl Render for CompanionWindow {
                         cx.stop_propagation();
                     }
                     "escape" => {
-                        if !this
+                        let input = this
                             .pdf
                             .as_ref()
-                            .is_some_and(|pdf| pdf.dismiss_input(window, cx))
-                        {
-                            this.bridge.abort();
+                            .is_some_and(|pdf| pdf.dismiss_input(window, cx));
+                        let selection = this.pdf.as_ref().is_some_and(|pdf| pdf.has_selection(cx));
+                        match crate::selection_bar::escape_target(input, selection) {
+                            crate::selection_bar::EscapeTarget::Input => {}
+                            crate::selection_bar::EscapeTarget::Selection => {
+                                this.dismiss_selection(cx)
+                            }
+                            crate::selection_bar::EscapeTarget::Abort => this.bridge.abort(),
                         }
                         cx.notify();
                         cx.stop_propagation();
