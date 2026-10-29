@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, RenderImage,
-    StatefulInteractiveElement, Styled, Window, div, point, px,
+    AppContext, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
+    RenderImage, StatefulInteractiveElement, Styled, Window, div, point, px,
 };
 use image::{Frame, RgbaImage};
 
@@ -230,7 +230,7 @@ impl PdfView {
         )
     }
 
-    pub(crate) fn shift_scroll_listener(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn shift_scroll_listener(&self, cx: &mut Context<Self>) -> gpui::Canvas<()> {
         let viewer = cx.entity().downgrade();
         // A paint-time listener survives GPUI's cached view renders. The canvas
         // has no hitbox, so it never interferes with text selection or links.
