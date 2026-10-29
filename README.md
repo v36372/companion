@@ -271,6 +271,10 @@ files with preserved timestamps or removing inputs. Normal `npm run componentize
 always rebuilds. See [build performance](docs/build-performance.md) for CI caching,
 measurement commands and the debug-information tradeoff.
 
+Set `GPUI_PDF_PROFILE=1` when launching the reader to print 60-frame PDF view
+build, paint and paint-interval percentiles plus page/link counts to stderr.
+Profiling is disabled by default.
+
 Reader-only Rust checks need no generated component; parsing/store tests need no
 display:
 
