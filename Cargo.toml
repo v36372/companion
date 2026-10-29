@@ -5,6 +5,7 @@ members = [
   "crates/companion-agent-host",
   "crates/companion-store",
   "crates/companion-env",
+  "crates/pdf-view",
 ]
 resolver = "2"
 
@@ -24,7 +25,7 @@ publish = false
 [workspace.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.2" }  # gpui-pdf 0.6.1 uses the pre-0.3.10 Modifiers::secondary() API
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.2", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
-gpui-pdf = { version = "=0.6.1", features = ["search"] }
+gpui-pdf = { path = "crates/pdf-view", features = ["search"] }
 # Keep all component crates exact: newer 0.6.x releases drift beyond the
 # gpui-pre 0.3.2 snapshot required by gpui-pdf 0.6.1.
 gpui-component = "=0.6.0"
