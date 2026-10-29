@@ -4,6 +4,7 @@ mod app;
 mod ask_bar;
 mod chat;
 mod model_picker;
+mod selection_bar;
 mod window;
 
 fn main() -> anyhow::Result<()> {

@@ -147,15 +147,6 @@ pub(super) struct Runtime {
 }
 
 impl CompanionWindow {
-    /// Escape priority hook: transient sidebar precedes viewer inputs/selection/abort.
-    pub(super) fn dismiss_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.edge_sidebar.mode(self.document.is_some()) != Mode::Peek {
-            return false;
-        }
-        self.hide_sidebar(window, cx);
-        true
-    }
-
     pub(super) fn sidebar_runtime(
         &self,
         window: &mut Window,

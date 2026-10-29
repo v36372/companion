@@ -48,7 +48,10 @@ use gpui::MouseMoveEvent;
 
 mod recolor;
 #[cfg(feature = "markup")]
+mod selection;
+#[cfg(feature = "markup")]
 mod text;
+mod zoom;
 pub use recolor::PageColors;
 #[cfg(feature = "markup")]
 pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
@@ -470,6 +473,8 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// A page click or a new drag cleared the pending selection.
+    SelectionCleared,
     /// A user clicked a page annotation. Hosts resolve names and track navigation.
     LinkClicked(LinkTarget),
     /// Visible zero-based page / coarse in-page fraction, sampled at most every 150ms.
@@ -525,6 +530,9 @@ pub struct PdfView {
     fit: Option<FitMode>,
     /// Viewport size the fit was last computed for (so a resize re-fits once).
     fit_viewport: (f32, f32),
+    zoom_gesture: u64,
+    pinch_active: bool,
+    zoom_active: bool,
     /// On-screen zoom factor (1.0 = base width). Affects layout and render scale.
     zoom: f32,
     /// The quality multiplier the pages were last rendered at; compared against the
@@ -564,6 +572,8 @@ pub struct PdfView {
     /// In-progress drag selection: (page, start, current) in normalized coords.
     #[cfg(feature = "markup")]
     sel_drag: Option<(usize, NormPoint, NormPoint)>,
+    #[cfg(feature = "markup")]
+    committed: Option<selection::CommittedSelection>,
     /// Called when a drag-selection finishes, so the host stores the note (markup).
     #[cfg(feature = "markup")]
     on_create: Option<CreateHighlightFn>,
@@ -672,8 +682,11 @@ impl PdfView {
             scroll: ScrollHandle::new(),
             scrollbar_drag: None,
             horizontal_drag: None,
-            fit: None,
+            fit: Some(FitMode::Width),
             fit_viewport: (0.0, 0.0),
+            zoom_gesture: 0,
+            pinch_active: false,
+            zoom_active: false,
             zoom: 1.0,
             last_quality,
             generation: 0,
@@ -694,6 +707,8 @@ impl PdfView {
             selecting: false,
             #[cfg(feature = "markup")]
             sel_drag: None,
+            #[cfg(feature = "markup")]
+            committed: None,
             #[cfg(feature = "markup")]
             on_create: None,
             #[cfg(feature = "markup")]
@@ -1142,14 +1157,38 @@ impl PdfView {
         cx.notify();
     }
 
-    /// Map a window-space point to the page it's over and normalized page coords.
-    ///
-    /// Uses gpui's *actual* per-page laid-out bounds (`bounds_for_item`) rather than
-    /// re-summing `display_height`. That sum drifts from gpui's pixel-snapped layout
-    /// (~0.18px per Letter page), which by ~page 150 of a long PDF lands the highlight a
-    /// couple of text rows off the cursor. `bounds_for_item` is in the scroll element's
-    /// unscrolled frame, so the cursor is shifted by the scroll offset to match.
-    /// (`markup` feature.)
+    /// Clear the pending text selection without emitting a user-action event.
+    #[cfg(feature = "markup")]
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.committed = None;
+        self.sel_drag = None;
+        cx.notify();
+    }
+
+    #[cfg(feature = "markup")]
+    pub fn selection_viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.scroll.bounds()
+    }
+
+    #[cfg(feature = "markup")]
+    pub fn has_selection(&self) -> bool {
+        self.committed.is_some()
+    }
+
+    #[cfg(feature = "markup")]
+    pub fn selection_anchor(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let selection = self.committed.as_ref()?;
+        let rect = selection.rects.first()?;
+        let page = self.scroll.bounds_for_item(selection.page)?;
+        Some(gpui::Bounds {
+            origin: page.origin
+                + self.scroll.offset()
+                + gpui::point(page.size.width * rect.x, page.size.height * rect.y),
+            size: gpui::size(page.size.width * rect.w, page.size.height * rect.h),
+        })
+    }
+
+    /// Map a window-space point using laid-out page bounds and the scroll offset.
     #[cfg(feature = "markup")]
     fn point_to_page(&self, pos: gpui::Point<gpui::Pixels>) -> Option<(usize, NormPoint)> {
         let probe = f32::from(pos.y) - f32::from(self.scroll.offset().y);
@@ -1257,8 +1296,11 @@ impl PdfView {
     /// (rescaled) until the fresh ones land, so nothing blanks.
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         // A manual zoom takes over from any active fit mode.
-        self.fit = None;
+        let had_fit = self.fit.take().is_some();
         self.apply_zoom(zoom, cx);
+        if had_fit {
+            cx.notify();
+        }
     }
 
     fn apply_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
@@ -1267,6 +1309,8 @@ impl PdfView {
             return;
         }
         let offset = self.zoom_offset(z);
+        self.zoom_gesture = self.zoom_gesture.wrapping_add(1);
+        self.zoom_active = false;
         self.zoom = z;
         self.generation = self.generation.wrapping_add(1);
         self.scroll.set_offset(offset);
@@ -1315,7 +1359,7 @@ impl PdfView {
         // slots' 1px borders and a hair of breathing room.
         let avail_w = (vw - SCROLLBAR_W - 6.0).max(50.0);
         let zoom = match mode {
-            FitMode::Width => avail_w / PAGE_WIDTH,
+            FitMode::Width => Self::fit_width_zoom(vw),
             FitMode::Page => {
                 let (pw, ph) = self
                     .dims
@@ -1719,6 +1763,22 @@ impl Render for PdfView {
                         slot = slot.child(hl);
                     }
                 }
+                if let Some(selection) = &self.committed
+                    && selection.page == i
+                {
+                    for r in &selection.rects {
+                        slot = slot.child(
+                            div()
+                                .absolute()
+                                .left(px(r.x * page_width))
+                                .top(px(r.y * disp_h))
+                                .w(px(r.w * page_width))
+                                .h(px(r.h * disp_h))
+                                .rounded(px(1.0))
+                                .bg(hsla(0.58, 0.9, 0.55, 0.3)),
+                        );
+                    }
+                }
                 // Live text-selection feedback.
                 if let Some((pg, a, b)) = self.sel_drag
                     && pg == i
@@ -1791,6 +1851,11 @@ impl Render for PdfView {
                                 MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
                                     window.focus(&this.focus, cx);
+                                    #[cfg(feature = "markup")]
+                                    if this.committed.take().is_some() {
+                                        cx.emit(PdfEvent::SelectionCleared);
+                                        cx.notify();
+                                    }
                                     cx.stop_propagation();
                                 }),
                             )
@@ -1827,6 +1892,9 @@ impl Render for PdfView {
                             .get(pg)
                             .is_some_and(|links| links.iter().any(|link| link.contains(n.x, n.y)))
                     {
+                        if this.committed.take().is_some() {
+                            cx.emit(PdfEvent::SelectionCleared);
+                        }
                         this.sel_drag = Some((pg, n, n));
                         cx.notify();
                     }
@@ -1926,10 +1994,7 @@ impl Render for PdfView {
                     let Some((pg, a, b)) = this.sel_drag.take() else {
                         return;
                     };
-                    // Require a real drag: a bare click (or tiny jitter) must not create a
-                    // highlight. Threshold is in normalized page coords (~a few pixels).
-                    const MIN_DRAG: f32 = 0.005;
-                    if (a.x - b.x).abs() < MIN_DRAG && (a.y - b.y).abs() < MIN_DRAG {
+                    if selection::release_action(a, b, false) != selection::ReleaseAction::Commit {
                         cx.notify();
                         return;
                     }
@@ -1940,6 +2005,10 @@ impl Render for PdfView {
                     if let Some(sel) = sel
                         && let Some(cb) = this.on_create.clone()
                     {
+                        this.committed = Some(selection::CommittedSelection {
+                            page: pg,
+                            rects: sel.rects.clone(),
+                        });
                         let color = this.active_color_name();
                         cb(pg, sel.quote, sel.occurrence, color, window, cx);
                     }
@@ -2145,6 +2214,7 @@ impl Render for PdfView {
                                     }))
                                     .children(slots),
                             )
+                            .child(self.zoom_listener(cx))
                             .child(self.shift_scroll_listener(cx))
                             .children(scrollbar)
                             .children(horizontal_scrollbar)
