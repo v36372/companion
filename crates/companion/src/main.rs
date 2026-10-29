@@ -7,6 +7,7 @@ mod chat_surface;
 mod diagram;
 mod model_picker;
 mod orb;
+mod selection_bar;
 mod theme;
 mod window;
 

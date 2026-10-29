@@ -97,6 +97,25 @@ impl CompanionPdf {
             .update(cx, |view, cx| view.dismiss_input(window, cx))
     }
 
+    pub fn clear_selection(&self, cx: &mut App) {
+        self.inner.update(cx, |view, cx| view.clear_selection(cx));
+    }
+
+    pub fn has_selection(&self, cx: &App) -> bool {
+        self.inner.read(cx).has_selection()
+    }
+
+    pub fn selection_geometry(
+        &self,
+        cx: &App,
+    ) -> (
+        Option<gpui::Bounds<gpui::Pixels>>,
+        gpui::Bounds<gpui::Pixels>,
+    ) {
+        let view = self.inner.read(cx);
+        (view.selection_anchor(), view.selection_viewport())
+    }
+
     pub fn unlock(&self, password: String, cx: &mut App) {
         self.inner.update(cx, |view, cx| view.unlock(password, cx));
     }

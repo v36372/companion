@@ -23,6 +23,9 @@
   an attached highlight palette popover; removed unused forms/lopdf and box-drag
   area creation while preserving quote highlights and host navigation APIs
   (`src/toolbar.rs`, `src/find_bar.rs`).
+- Fit-width by default and cursor-anchored wheel/pinch zoom with deferred raster refresh.
+- Persistent text selection, selection-cleared events and window-space anchors
+  for host selection actions (`src/selection.rs`, `src/lib.rs`).
 - Companion host: cursor-following agent orb, conditional wide chat surface and
   safe inline SVG diagrams; closing chat restores the reader's available width
   without changing the vendored PDF API.
