@@ -28,6 +28,7 @@ pub fn nearby_first(count: usize, window: RangeInclusive<usize>) -> impl Iterato
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "markup")]
     use super::*;
     #[test]
     fn clamps_window_and_empty_document() {
