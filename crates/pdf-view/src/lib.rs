@@ -57,6 +57,7 @@ pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
 /// PDF outline / table-of-contents + link extraction (always available — no deps).
 mod outline;
+mod page_events;
 pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 
 #[cfg(feature = "forms")]
@@ -499,6 +500,11 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// Visible zero-based page / coarse in-page fraction, sampled at most every 150ms.
+    PageChanged {
+        page: usize,
+        scroll_frac: f32,
+    },
     /// The file couldn't be read or parsed (see [`PdfView::load_error`]) —
     /// terminal for this view; the viewer shows the message in place of the
     /// loading placeholder. Also fired when a retry-unlock fails with a
@@ -653,6 +659,7 @@ impl PdfView {
         quality: PdfQualityFn,
         cx: &mut Context<Self>,
     ) -> Self {
+        page_events::start(cx);
         let load_path = path.clone();
         cx.spawn(async move |this, cx| {
             // Read the file off-thread, keep the bytes (so an encrypted PDF can be
@@ -1569,7 +1576,7 @@ impl PdfView {
     }
 
     /// The topmost visible page index for the current scroll position.
-    fn current_page_index(&self) -> usize {
+    pub fn current_page_index(&self) -> usize {
         let scroll_y = f32::from(-self.scroll.offset().y);
         current_page(&self.dims, self.page_width(), scroll_y)
     }

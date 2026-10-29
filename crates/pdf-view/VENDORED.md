@@ -15,3 +15,7 @@
 The examples are copied unchanged. The manifest uses this repository's workspace
 dependencies and disables publishing. The upstream
 Cargo.lock and rust-toolchain.toml are not included.
+
+## Local changes
+
+- Scroll-driven page/fraction events via an out-of-layout 150ms sampler and public `current_page_index` (page-events).

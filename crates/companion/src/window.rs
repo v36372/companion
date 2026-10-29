@@ -31,6 +31,14 @@ use gpui_component::{
 #[path = "sidebar.rs"]
 mod sidebar;
 
+/// Restores seed `last`; observing that same viewport must not schedule a write.
+fn observe_position(last: &mut Option<(u32, f32)>, page: u32, fraction: f32) -> bool {
+    let next = Some((page, fraction));
+    let changed = *last != next;
+    *last = next;
+    changed
+}
+
 pub struct CompanionWindow {
     pdf: Option<CompanionPdf>,
     focus: FocusHandle,
@@ -41,6 +49,7 @@ pub struct CompanionWindow {
     recent: Vec<Document>,
     document: Option<Document>,
     page_0: u32,
+    observed_position: Option<(u32, f32)>,
     navigation: HashMap<String, (ReadingProgress, Arc<AtomicU64>)>,
     error: Option<String>,
     selection: Option<(LiveSelection, String)>,
@@ -191,6 +200,7 @@ impl CompanionWindow {
             recent: Vec::new(),
             document: None,
             page_0: 0,
+            observed_position: None,
             navigation: HashMap::new(),
             error,
             selection: None,
@@ -235,13 +245,16 @@ impl CompanionWindow {
         self.bridge.shutdown()
     }
 
-    /// Flush pending explicit navigation before quitting; background timers may
+    /// Flush pending navigation before quitting; background timers may
     /// not run once the application event loop has stopped.
     pub fn close_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.import.invalidate();
         self.bridge.close();
         if let Some(catalog) = &self.catalog {
             for (document_id, (progress, generation)) in &self.navigation {
+                if generation.load(Ordering::SeqCst) == 0 {
+                    continue; // A restored row with no subsequent navigation is not dirty.
+                }
                 // Check/invalidate timers under the same writer lock used below.
                 let result = catalog.write(|connection| {
                     generation.fetch_add(1, Ordering::SeqCst);
@@ -396,7 +409,7 @@ impl CompanionWindow {
             return;
         };
         // A rapid switch/reopen may precede the debounce write. Prefer our
-        // latest explicit page over the older durable row in that case.
+        // latest observed page over the older durable row in that case.
         let saved = self
             .navigation
             .get(&document.id)
@@ -426,6 +439,8 @@ impl CompanionWindow {
         self.release_pdf(window, cx);
         let pdf = CompanionPdf::open(display_path, cx);
         self.page_0 = progress.as_ref().map_or(0, |progress| progress.page_0);
+        // The first observation of the restored page top acknowledges the restore.
+        self.observed_position = Some((self.page_0, 0.0));
         pdf.goto_page_0(self.page_0 as usize, cx);
         let weak = cx.weak_entity();
         pdf.set_on_create_highlight(
@@ -445,7 +460,27 @@ impl CompanionWindow {
         cx.subscribe(
             &pdf.view(),
             |this, viewer, event: &gpui_pdf::PdfEvent, cx| {
-                if matches!(event, gpui_pdf::PdfEvent::LockChanged) {
+                if let gpui_pdf::PdfEvent::PageChanged { page, scroll_frac } = event {
+                    let page_0 = *page as u32;
+                    let changed =
+                        observe_position(&mut this.observed_position, page_0, *scroll_frac);
+                    this.page_0 = page_0;
+                    if changed {
+                        this.persist_navigation(
+                            ReadingProgress {
+                                page_0,
+                                scroll_frac: f64::from(*scroll_frac),
+                                viewport_excerpt: None,
+                            },
+                            cx,
+                        );
+                    }
+                    if let Some(snapshot) = this.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref())
+                    {
+                        snapshot.record_scroll_navigation(page_0, *scroll_frac);
+                    }
+                    cx.notify();
+                } else if matches!(event, gpui_pdf::PdfEvent::LockChanged) {
                     this.password_open = viewer.read(cx).is_locked();
                     this.password_focus_pending = this.password_open;
                     if this.password_open {
@@ -473,15 +508,17 @@ impl CompanionWindow {
             self.error = Some(format!("Cannot update recent files: {error:#}"));
         }
         self.refresh_recent();
-        // Reopening is explicit navigation, but preserve any saved excerpt/fraction.
-        self.persist_navigation(
-            progress.unwrap_or(ReadingProgress {
-                page_0: 0,
-                scroll_frac: 0.0,
-                viewport_excerpt: None,
-            }),
-            cx,
-        );
+        // Seed context without echoing restored progress to SQLite.
+        self.navigation.entry(document.id).or_insert_with(|| {
+            (
+                progress.unwrap_or(ReadingProgress {
+                    page_0: 0,
+                    scroll_frac: 0.0,
+                    viewport_excerpt: None,
+                }),
+                Arc::new(AtomicU64::new(0)),
+            )
+        });
         cx.notify();
     }
 
@@ -582,7 +619,14 @@ impl CompanionWindow {
                             .map(|(progress, _)| progress.clone())
                         {
                             // Attaching extraction must not scroll or discard restored progress.
-                            this.persist_navigation(progress, cx);
+                            if let Some(snapshot) =
+                                this.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref())
+                            {
+                                snapshot.record_scroll_navigation(
+                                    progress.page_0,
+                                    progress.scroll_frac as f32,
+                                );
+                            }
                         }
                         if let (Some(fs), Some(doc)) = (&this.doc_env, &this.document) {
                             this.bridge.switch_document(Attachment {
@@ -662,7 +706,7 @@ impl CompanionWindow {
         pending.0 = progress.clone();
         let generation = pending.1.clone();
         let expected = generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let timer = cx.background_executor().timer(Duration::from_millis(500));
+        let timer = cx.background_executor().timer(Duration::from_secs(1));
         cx.background_executor()
             .spawn(async move {
                 timer.await;
@@ -1115,6 +1159,15 @@ impl Render for CompanionWindow {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restore_acknowledgement_does_not_echo_a_write() {
+        let mut last = Some((29, 0.0));
+        assert!(!super::observe_position(&mut last, 29, 0.0));
+        assert!(super::observe_position(&mut last, 29, 0.25));
+        assert!(!super::observe_position(&mut last, 29, 0.25));
+        assert!(super::observe_position(&mut last, 30, 0.0));
+    }
+
     use super::ImportState;
 
     #[test]
