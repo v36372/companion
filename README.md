@@ -200,7 +200,7 @@ sandbox against malicious model instructions.
   into the pane, alongside short PDF/search tool traces.
 - **Follow:** the pane's **Follow: on/off** toggle persists per conversation
   (default on). When on, the next request includes a bounded reading section with
-  the visible page, coarse in-page scroll fraction, excerpt and selection.
+  the visible page, excerpt and selection, including wheel-scrolled pages.
   Page turns/scrolling never submit a question automatically.
   **What did I just read?** submits a question independently of the Follow flag.
 - **Scanned pages:** a “This page has no text” banner above the viewer describes
