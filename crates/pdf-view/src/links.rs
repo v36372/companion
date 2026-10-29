@@ -142,11 +142,13 @@ pub fn page_links(doc: &Pdf) -> Vec<Vec<PdfLink>> {
                 return links;
             }
             if let Some(annots) = page.raw().get::<Array>("Annots") {
-                for value in annots.iter::<Object>().take(budget) {
+                for value in annots.raw_iter().take(budget) {
                     budget -= 1;
-                    let Some(annot) = value.into_dict() else {
-                        continue;
+                    let annot = match value {
+                        MaybeRef::Ref(reference) => doc.xref().get::<Dict>(reference.into()),
+                        MaybeRef::NotRef(object) => object.into_dict(),
                     };
+                    let Some(annot) = annot else { continue };
                     if annot
                         .get::<Name>("Subtype")
                         .is_none_or(|n| n.as_str() != "Link")
@@ -368,6 +370,7 @@ mod tests {
     fn null_positions_bad_refs_and_clipped_rects() {
         let doc = fixture(
             &[
+                "999 0 R".into(),
                 annotation("/Dest [4 0 R /XYZ null null null]"),
                 annotation("/Dest [999 0 R /Fit]"),
                 "<< /Subtype /Link /Rect [-100 -100 50 100] /Dest /clipped >>".into(),
