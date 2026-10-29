@@ -974,7 +974,7 @@ impl Render for CompanionWindow {
         div()
             .relative()
             .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "f" if event.keystroke.modifiers.control
                         || event.keystroke.modifiers.platform =>
@@ -993,7 +993,13 @@ impl Render for CompanionWindow {
                         cx.stop_propagation();
                     }
                     "escape" => {
-                        this.bridge.abort();
+                        if !this
+                            .pdf
+                            .as_ref()
+                            .is_some_and(|pdf| pdf.dismiss_input(window, cx))
+                        {
+                            this.bridge.abort();
+                        }
                         cx.notify();
                         cx.stop_propagation();
                     }

@@ -63,6 +63,7 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PdfView::reveal_highlight`](#pdfviewreveal_highlight) | method | markup | `fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>)` | Scroll to a page's highlight and flash it |
 | [`PdfView::toggle_search`](#pdfviewtoggle_search) | method | search | `fn toggle_search(&mut self, cx: &mut Context<Self>)` | Open/focus the find bar |
 | [`PdfView::close_search`](#pdfviewclose_search) | method | search | `fn close_search(&mut self, cx: &mut Context<Self>)` | Close the find bar, clear matches |
+| `PdfView::dismiss_input` | method | — | `fn dismiss_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool` | Consume Escape for palette/find/page input before host-global abort |
 | [`PdfView::next_match`](#pdfviewnext_match--prev_match) | method | search | `fn next_match(&mut self, cx: &mut Context<Self>)` | Focus the next match (wraps) |
 | [`PdfView::prev_match`](#pdfviewnext_match--prev_match) | method | search | `fn prev_match(&mut self, cx: &mut Context<Self>)` | Focus the previous match (wraps) |
 | [`OutlineItem`](#struct-outlineitem) | struct | — | `{ title: String, level: usize, page: Option<usize> }` | One flattened outline (bookmark) entry |
@@ -820,7 +821,8 @@ pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>)
 ```
 
 Toggle "highlight mode": when on, dragging over text selects it and fires the
-create handler; the color picker pops down (if a palette is set). Turning it off
+create handler. The pen button opens the attached color picker separately, so
+programmatic/keyboard selection changes do not steal focus. Turning it off
 cancels any in-progress selection and hides the picker. While on, every visible
 page extracts its text layer so drags can select anywhere. Also bound to ⌘⇧H.
 **Parameters** — `cx` only.

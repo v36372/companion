@@ -85,6 +85,12 @@ impl CompanionPdf {
         self.inner.update(cx, |view, cx| view.toggle_search(cx));
     }
 
+    /// Let viewer inputs consume Escape before the application's global abort.
+    pub fn dismiss_input(&self, window: &mut Window, cx: &mut App) -> bool {
+        self.inner
+            .update(cx, |view, cx| view.dismiss_input(window, cx))
+    }
+
     pub fn unlock(&self, password: String, cx: &mut App) {
         self.inner.update(cx, |view, cx| view.unlock(password, cx));
     }

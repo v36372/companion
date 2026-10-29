@@ -113,7 +113,9 @@ both are open. Neither overlay changes the document's layout.
 **Cmd/Ctrl-F** opens/focuses the native find input, including IME, selection and
 clipboard support. The counter reads `3/17`; **Enter / Shift-Enter** cycle matches,
 **Cmd/Ctrl-G / Cmd/Ctrl-Shift-G** also cycle, and **Esc** closes. PageUp/PageDown
-remain viewer navigation shortcuts when no native input is focused.
+remain viewer navigation shortcuts when no native input is focused. Hosts that
+capture Escape globally should first call `PdfView::dismiss_input(window, cx)`;
+when it returns false, no viewer input needs the key and the host may abort.
 
 The unused `forms` feature, form mutation/event APIs, and `toggle_area_mode` /
 `set_on_create_area` / `CreateAreaFn` have been removed. `Highlight.region` remains

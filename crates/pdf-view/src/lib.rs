@@ -859,8 +859,9 @@ impl PdfView {
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>) {
         self.selecting = !self.selecting;
         self.sel_drag = None;
-        // Turning highlight mode on pops the color picker down; off hides it.
-        self.palette_open = self.selecting && !self.palette.is_empty();
+        // Programmatic/keyboard selection changes must not steal focus with a popup.
+        // The pen button explicitly opens the attached palette.
+        self.palette_open = false;
         cx.notify();
     }
 
