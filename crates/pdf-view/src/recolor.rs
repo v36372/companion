@@ -255,7 +255,11 @@ impl PdfView {
                 let viewer = viewer.clone();
                 // Capture before the built-in bubble listener has already moved y.
                 window.on_mouse_event(move |event: &gpui::ScrollEvent, phase, window, cx| {
-                    if phase == gpui::DispatchPhase::Capture && event.modifiers.shift {
+                    if phase == gpui::DispatchPhase::Capture
+                        && event.modifiers.shift
+                        && !event.modifiers.control
+                        && !event.modifiers.secondary(cx)
+                    {
                         let _ = viewer.update(cx, |this, cx| {
                             if this.scroll.bounds().contains(&event.position) {
                                 this.scroll_pages(event, window, cx);

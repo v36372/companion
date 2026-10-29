@@ -49,6 +49,7 @@ use gpui::MouseMoveEvent;
 mod recolor;
 #[cfg(feature = "markup")]
 mod text;
+mod zoom;
 pub use recolor::PageColors;
 #[cfg(feature = "markup")]
 pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
@@ -525,6 +526,9 @@ pub struct PdfView {
     fit: Option<FitMode>,
     /// Viewport size the fit was last computed for (so a resize re-fits once).
     fit_viewport: (f32, f32),
+    zoom_gesture: u64,
+    pinch_active: bool,
+    zoom_active: bool,
     /// On-screen zoom factor (1.0 = base width). Affects layout and render scale.
     zoom: f32,
     /// The quality multiplier the pages were last rendered at; compared against the
@@ -672,8 +676,11 @@ impl PdfView {
             scroll: ScrollHandle::new(),
             scrollbar_drag: None,
             horizontal_drag: None,
-            fit: None,
+            fit: Some(FitMode::Width),
             fit_viewport: (0.0, 0.0),
+            zoom_gesture: 0,
+            pinch_active: false,
+            zoom_active: false,
             zoom: 1.0,
             last_quality,
             generation: 0,
@@ -1257,8 +1264,11 @@ impl PdfView {
     /// (rescaled) until the fresh ones land, so nothing blanks.
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         // A manual zoom takes over from any active fit mode.
-        self.fit = None;
+        let had_fit = self.fit.take().is_some();
         self.apply_zoom(zoom, cx);
+        if had_fit {
+            cx.notify();
+        }
     }
 
     fn apply_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
@@ -1267,6 +1277,8 @@ impl PdfView {
             return;
         }
         let offset = self.zoom_offset(z);
+        self.zoom_gesture = self.zoom_gesture.wrapping_add(1);
+        self.zoom_active = false;
         self.zoom = z;
         self.generation = self.generation.wrapping_add(1);
         self.scroll.set_offset(offset);
@@ -1315,7 +1327,7 @@ impl PdfView {
         // slots' 1px borders and a hair of breathing room.
         let avail_w = (vw - SCROLLBAR_W - 6.0).max(50.0);
         let zoom = match mode {
-            FitMode::Width => avail_w / PAGE_WIDTH,
+            FitMode::Width => Self::fit_width_zoom(vw),
             FitMode::Page => {
                 let (pw, ph) = self
                     .dims
@@ -2145,6 +2157,7 @@ impl Render for PdfView {
                                     }))
                                     .children(slots),
                             )
+                            .child(self.zoom_listener(cx))
                             .child(self.shift_scroll_listener(cx))
                             .children(scrollbar)
                             .children(horizontal_scrollbar)
