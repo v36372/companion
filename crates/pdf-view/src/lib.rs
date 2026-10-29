@@ -1392,8 +1392,8 @@ impl PdfView {
         }
     }
 
-    /// Set the zoom factor (clamped), keeping the current page in view. Visible pages
-    /// re-render crisp at the new scale; their current bitmaps stay on screen
+    /// Set the zoom factor (clamped), preserving the viewport centre where possible.
+    /// Visible pages re-render crisp at the new scale; their current bitmaps stay on screen
     /// (rescaled) until the fresh ones land, so nothing blanks.
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         // A manual zoom takes over from any active fit mode.

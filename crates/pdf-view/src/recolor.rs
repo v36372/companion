@@ -125,6 +125,17 @@ impl PdfView {
         }
         let old_width = self.page_width();
         let new_width = crate::PAGE_WIDTH * zoom;
+        // Fit-page is an explicit request to see the whole current page, not
+        // to retain a point partway down it. Keep its original top alignment.
+        if self.fit == Some(crate::FitMode::Page) {
+            let page = self.current_page_index();
+            let top = if page == 0 {
+                0.0
+            } else {
+                crate::page_top_y(&self.dims, new_width, page)
+            };
+            return point(px(0.0), px(-top));
+        }
         let ratio = new_width / old_width;
         let sx = f32::from(-self.scroll.offset().x);
         let sy = f32::from(-self.scroll.offset().y);
