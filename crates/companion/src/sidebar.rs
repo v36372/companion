@@ -8,7 +8,7 @@ use gpui_component::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SidebarTab {
+pub(super) enum SidebarTab {
     Outline,
     Recent,
 }
@@ -48,12 +48,14 @@ impl CompanionWindow {
             .unwrap_or_default();
         // None means automatic until the user actually chooses a tab. In
         // particular an asynchronously loaded outline can become the default.
-        let choice = window.use_keyed_state("sidebar-tab-choice", cx, |_, _| None::<SidebarTab>);
+        // The runtime survives Hidden, so a peek keeps the user's tab choice.
+        let choice = self.sidebar_runtime(window, cx);
         let tab = choice
             .read(cx)
+            .tab
             .unwrap_or_else(|| default_tab(!outline.is_empty()));
         let current = current_section(outline, self.page_0);
-        let tooltip_state = self.sidebar_runtime(window, cx);
+        let tooltip_state = choice.clone();
         let spacing = cx.theme().spacing_tokens();
         let typography = cx.theme().typography_tokens();
         let muted = cx.theme().muted_foreground;
@@ -69,7 +71,7 @@ impl CompanionWindow {
             .child(Tab::new().label("Recent"))
             .on_click(move |index, _, cx| {
                 choice.update(cx, |choice, cx| {
-                    *choice = Some(if *index == 0 {
+                    choice.tab = Some(if *index == 0 {
                         SidebarTab::Outline
                     } else {
                         SidebarTab::Recent

@@ -129,6 +129,7 @@ pub(super) struct Runtime {
     started: bool,
     held: bool,
     tooltips: Vec<gpui::AnyWeakView>,
+    pub(super) tab: Option<super::sidebar::SidebarTab>,
 }
 
 impl CompanionWindow {
@@ -153,6 +154,7 @@ impl CompanionWindow {
             started: false,
             held: false,
             tooltips: Vec::new(),
+            tab: None,
         })
     }
 
@@ -238,7 +240,7 @@ impl CompanionWindow {
             cx.spawn_in(window, async move |this, cx| {
                 loop {
                     cx.background_executor()
-                        .timer(Duration::from_millis(50))
+                        .timer(Duration::from_millis(30))
                         .await;
                     if this
                         .update_in(cx, |this, window, cx| {
