@@ -11,10 +11,11 @@ test('mock streams a diagram and fails only the latest fail prompt', async () =>
       child.once('error', reject);
       child.stdout.once('data', data => resolve(data.toString().match(/http:\/\/127\.0\.0\.1:\d+/)[0]));
     });
-    const request = content => fetch(`${base}/chat/completions`, {method: 'POST', body: JSON.stringify({messages: [
+    const request = (content, path = '/api/v1/chat/completions') => fetch(`${base}${path}`, {method: 'POST', body: JSON.stringify({messages: [
       {role: 'user', content: 'fail earlier'}, {role: 'user', content},
     ]})});
     assert.equal((await request('fail')).status, 500);
+    assert.equal((await request('fail', '/chat/completions')).status, 500);
     const start = Date.now();
     const response = await request('draw a list');
     assert.equal(response.status, 200);

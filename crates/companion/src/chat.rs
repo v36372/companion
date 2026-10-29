@@ -33,9 +33,10 @@ pub(crate) fn editable_failed_question(bridge: &Bridge) -> Option<String> {
         return None;
     }
     let failed = matches!(bridge.availability, Availability::Failed(_))
-        || bridge.notices.iter().any(|notice| {
-            notice.starts_with("session_failed:") || notice.starts_with("task_faulted:")
-        })
+        || bridge
+            .notices
+            .iter()
+            .any(|notice| failure_detail(notice).is_some())
         || bridge
             .notices
             .last()
@@ -57,6 +58,39 @@ pub(crate) fn editable_failed_question(bridge: &Bridge) -> Option<String> {
         let (speaker, question) = turn.text.split_once('\n')?;
         (is_user(speaker) && !question.trim().is_empty()).then(|| question.to_owned())
     })
+}
+
+fn failure_detail(notice: &str) -> Option<&str> {
+    ["session_failed:", "task_faulted:", "submission_unanswered:"]
+        .into_iter()
+        .find_map(|prefix| notice.strip_prefix(prefix))
+        .map(str::trim)
+}
+
+fn visible_notice(bridge: &Bridge) -> Option<String> {
+    let notice = bridge.notices.last()?;
+    let Some(detail) = failure_detail(notice) else {
+        return Some(notice.clone());
+    };
+    editable_failed_question(bridge)?;
+    let detail = detail
+        .split_once(':')
+        .filter(|(status, _)| {
+            status
+                .parse::<u16>()
+                .is_ok_and(|code| (100..600).contains(&code))
+        })
+        .map_or(detail, |(_, body)| body.trim());
+    let message = serde_json::from_str::<serde_json::Value>(detail)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or(value["message"].as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| detail.to_owned());
+    Some(format!("Could not get an answer: {message}"))
 }
 
 pub(crate) fn status_label(bridge: &Bridge) -> &'static str {
@@ -88,6 +122,7 @@ pub fn pane(
     cx: &mut gpui::App,
 ) -> impl IntoElement {
     follow_tail(scroll);
+    let failed_question = editable_failed_question(bridge);
     let unavailable = bridge
         .unavailable_reason()
         .map(|_| status_label(bridge).to_owned());
@@ -198,15 +233,6 @@ pub fn pane(
                                 }),
                         )
                 }))
-                .children(bridge.notices.last().map(|text| {
-                    div()
-                        .text_xs()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(text.clone())
-                }))
                 .when(!bridge.live.is_empty(), |pane| {
                     pane.child(
                         div().w_full().child(
@@ -219,6 +245,19 @@ pub fn pane(
                     )
                 }),
         )
+        .children(visible_notice(bridge).map(|text| {
+            div()
+                .text_xs()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(if failed_question.is_some() {
+                    cx.theme().danger
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .child(text)
+        }))
         .children(bridge.parked_task.map(|_| {
             Button::new("retry-parked-task")
                 .outline()
@@ -233,7 +272,7 @@ pub fn pane(
                 }))
                 .on_click(move |_, window, cx| retry(window, cx))
         }))
-        .children(editable_failed_question(bridge).map(|question| {
+        .children(failed_question.map(|question| {
             let composer = composer.clone();
             Button::new("edit-failed-question")
                 .ghost()
@@ -261,8 +300,11 @@ pub fn pane(
 
 #[cfg(test)]
 mod tests {
-    use super::{editable_failed_question, is_near_tail, is_user, status_label};
-    use crate::agent_bridge::{Availability, Bridge, TranscriptTurn};
+    use super::{editable_failed_question, is_near_tail, is_user, status_label, visible_notice};
+    use crate::{
+        agent_bridge::{Availability, Bridge, Event, TranscriptTurn},
+        orb::{AgentStatus, agent_status},
+    };
 
     #[test]
     fn failed_turn_restores_draft_without_conflicting_with_parked_retry() {
@@ -298,6 +340,70 @@ mod tests {
             quote: None,
         });
         assert!(editable_failed_question(&bridge).is_none());
+    }
+
+    #[test]
+    fn provider_failure_is_actionable_after_an_earlier_answer_and_clears_on_success() {
+        for earlier_answer in [false, true] {
+            let mut bridge = Bridge::off();
+            bridge.availability = Availability::Ready;
+            bridge.conversation = Some(1);
+            if earlier_answer {
+                for text in ["You\nEarlier question", "Agent\nEarlier answer"] {
+                    bridge.transcript.push(TranscriptTurn {
+                        text: text.into(),
+                        quote: None,
+                    });
+                }
+            }
+            bridge.transcript.push(TranscriptTurn {
+                text: "You\nfail".into(),
+                quote: None,
+            });
+            bridge.event(Event::Report(serde_json::json!({
+                "type": "submission_unanswered", "message": "500: {\"message\":\"Mock provider failure\"}"
+            }).to_string()));
+            bridge.event(Event::Settled);
+            assert_eq!(editable_failed_question(&bridge).as_deref(), Some("fail"));
+            assert_eq!(
+                visible_notice(&bridge).as_deref(),
+                Some("Could not get an answer: Mock provider failure")
+            );
+            assert_eq!(agent_status(&bridge, false, true), AgentStatus::Error);
+            bridge.running = true;
+            assert!(editable_failed_question(&bridge).is_none());
+            assert!(visible_notice(&bridge).is_none());
+            bridge.running = false;
+            bridge.transcript.push(TranscriptTurn {
+                text: "Agent\nRecovered answer".into(),
+                quote: None,
+            });
+            assert!(editable_failed_question(&bridge).is_none());
+            assert!(visible_notice(&bridge).is_none());
+            assert_eq!(agent_status(&bridge, true, false), AgentStatus::Idle);
+        }
+    }
+
+    #[test]
+    fn failure_labels_hide_wire_prefix_and_provider_error_envelopes() {
+        let mut bridge = Bridge::off();
+        bridge.transcript.push(TranscriptTurn {
+            text: "You\nQuestion".into(),
+            quote: None,
+        });
+        for notice in [
+            "submission_unanswered: 500: {\"error\":{\"message\":\"Provider unavailable\"}}",
+            "session_failed: Provider unavailable",
+            "task_faulted: Provider unavailable",
+        ] {
+            bridge.notices = vec![notice.into()];
+            assert_eq!(
+                visible_notice(&bridge).as_deref(),
+                Some("Could not get an answer: Provider unavailable")
+            );
+        }
+        bridge.notices = vec!["A normal notice".into()];
+        assert_eq!(visible_notice(&bridge).as_deref(), Some("A normal notice"));
     }
 
     #[test]

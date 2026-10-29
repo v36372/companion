@@ -20,7 +20,7 @@ const answer = `A Python list holds an ordered sequence of references. Each slot
 
 The arrows are references, not copies of the objects.`;
 const server = createServer(async (req, res) => {
-  if (req.method !== 'POST' || req.url !== '/chat/completions') {
+  if (req.method !== 'POST' || !['/chat/completions', '/api/v1/chat/completions'].includes(req.url)) {
     res.writeHead(404).end(); return;
   }
   let body = '';
