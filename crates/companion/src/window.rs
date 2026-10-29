@@ -60,6 +60,11 @@ pub struct CompanionWindow {
     password_open: bool,
     password_focus_pending: bool,
     chat_scroll: gpui::ScrollHandle,
+    surface_open: bool,
+    unread: bool,
+    chat_focus: FocusHandle,
+    orb: Entity<crate::orb::Orb>,
+    diagram_viewer: Entity<crate::diagram::DiagramViewer>,
     open_generation: u64,
     import: ImportState,
     pub(crate) doc_env: Option<Arc<companion_env::VirtualDocFs>>,
@@ -131,6 +136,16 @@ impl CompanionWindow {
         };
         let model_picker = cx.new(|cx| crate::model_picker::ModelPicker::new(catalog.clone(), cx));
         let composer = cx.new(AskBar::new);
+        let orb = cx.new(crate::orb::Orb::new);
+        cx.subscribe_in(
+            &orb,
+            window,
+            |this, _, _: &crate::orb::Toggle, window, cx| {
+                this.toggle_surface(window, cx);
+            },
+        )
+        .detach();
+        let diagram_viewer = cx.new(|_| crate::diagram::DiagramViewer::default());
         cx.subscribe(&composer, |this, _, event: &AskEvent, cx| {
             match event {
                 AskEvent::Submit(text) => {
@@ -172,7 +187,14 @@ impl CompanionWindow {
                 while let Ok(event) = events.recv().await {
                     if this
                         .update(cx, |this, cx| {
+                            let was_running = this.bridge.running;
                             this.bridge.event(event);
+                            this.unread = crate::orb::unread_after(
+                                this.unread,
+                                was_running,
+                                this.bridge.running,
+                                this.surface_open,
+                            );
                             crate::chat::follow_tail(&this.chat_scroll);
                             cx.notify();
                         })
@@ -210,6 +232,11 @@ impl CompanionWindow {
             password_open: false,
             password_focus_pending: false,
             chat_scroll: gpui::ScrollHandle::new(),
+            surface_open: false,
+            unread: false,
+            chat_focus: cx.focus_handle(),
+            orb,
+            diagram_viewer,
             open_generation: 0,
             import: ImportState::default(),
             doc_env: None,
@@ -239,6 +266,17 @@ impl CompanionWindow {
             view.open_document(document, window, cx);
         }
         view
+    }
+
+    fn toggle_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.surface_open = !self.surface_open;
+        self.unread = false;
+        if self.surface_open {
+            self.composer.update(cx, |bar, cx| bar.focus(window, cx));
+        } else {
+            self.focus.focus(window, cx);
+        }
+        cx.notify();
     }
 
     pub fn agent_shutdown(&self) -> Option<async_channel::Receiver<()>> {
@@ -911,6 +949,29 @@ impl Render for CompanionWindow {
                 .update(cx, |bar, cx| bar.focus(window, cx));
         }
         let disabled_reason = self.bridge.unavailable_reason();
+        let status = crate::orb::agent_status(&self.bridge, self.surface_open, self.unread);
+        self.orb.update(cx, |orb, cx| {
+            let label = if status == crate::orb::AgentStatus::Blocked {
+                if matches!(
+                    self.bridge.availability,
+                    crate::agent_bridge::Availability::NoKey
+                ) {
+                    "Needs an OpenRouter key".to_owned()
+                } else {
+                    self.bridge
+                        .unavailable_reason()
+                        .unwrap_or_else(|| "Retry parked task".into())
+                }
+            } else {
+                status.label().to_owned()
+            };
+            if orb.status != status || orb.label != label || orb.surface_open != self.surface_open {
+                orb.status = status;
+                orb.label = label;
+                orb.surface_open = self.surface_open;
+                cx.notify();
+            }
+        });
         let can_chat = disabled_reason.is_none();
         self.composer.update(cx, |bar, cx| {
             if bar.disabled_reason != disabled_reason {
@@ -1079,6 +1140,12 @@ impl Render for CompanionWindow {
                         }
                         cx.stop_propagation();
                     }
+                    "j" if event.keystroke.modifiers.control
+                        || event.keystroke.modifiers.platform =>
+                    {
+                        this.toggle_surface(window, cx);
+                        cx.stop_propagation();
+                    }
                     "pagedown" => {
                         this.navigate(true, cx);
                         cx.stop_propagation();
@@ -1088,6 +1155,17 @@ impl Render for CompanionWindow {
                         cx.stop_propagation();
                     }
                     "escape" => {
+                        if this.diagram_viewer.read(cx).is_open() {
+                            this.diagram_viewer
+                                .update(cx, |viewer, cx| viewer.close(cx));
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if this.surface_open && this.chat_focus.contains_focused(window, cx) {
+                            this.toggle_surface(window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                         if !this
                             .pdf
                             .as_ref()
@@ -1146,44 +1224,79 @@ impl Render for CompanionWindow {
             )
             .child(
                 div().flex_1().min_h_0().child(
-                    h_resizable("reader-panes")
-                        .child(
+                    h_resizable(if self.surface_open {
+                        "reader-panes-chat"
+                    } else {
+                        "reader-panes"
+                    })
+                    .child(
+                        resizable_panel()
+                            .size(px(240.))
+                            .size_range(px(200.)..px(360.))
+                            .flex_none()
+                            .child(self.render_sidebar(window, cx)),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size_range(px(280.)..gpui::Pixels::MAX)
+                            .child(center),
+                    )
+                    .when(self.surface_open, |panes| {
+                        panes.child(
                             resizable_panel()
-                                .size(px(240.))
-                                .size_range(px(200.)..px(360.))
+                                .size(window.viewport_size().width * 0.45)
+                                .size_range(
+                                    px(420.)
+                                        ..(window.viewport_size().width - px(360.)).max(px(420.)),
+                                )
                                 .flex_none()
-                                .child(self.render_sidebar(window, cx)),
+                                .child(
+                                    div()
+                                        .relative()
+                                        .size_full()
+                                        .track_focus(&self.chat_focus)
+                                        .child(crate::chat_surface::column(
+                                            &self.bridge,
+                                            self.composer.clone(),
+                                            self.model_picker.clone(),
+                                            self.diagram_viewer.clone(),
+                                            &self.chat_scroll,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.bridge.toggle_follow();
+                                                cx.notify();
+                                            }),
+                                            cx.listener(|this, _, _, cx| {
+                                                this.bridge
+                                                    .submit("What did I just read?".into(), None);
+                                                cx.notify();
+                                            }),
+                                            navigate_quote,
+                                            retry,
+                                            cx.listener(|this, _, window, cx| {
+                                                this.toggle_surface(window, cx)
+                                            }),
+                                            cx,
+                                        ))
+                                        .child({
+                                            let orb = self.orb.clone();
+                                            gpui::canvas(
+                                                |_, _, _| (),
+                                                move |bounds, _, _, cx| {
+                                                    orb.update(cx, |orb, _| {
+                                                        orb.surface_bounds = bounds
+                                                    });
+                                                },
+                                            )
+                                            .absolute()
+                                            .inset_0()
+                                        }),
+                                ),
                         )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(280.)..gpui::Pixels::MAX)
-                                .child(center),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size(px(380.))
-                                .size_range(px(320.)..px(560.))
-                                .flex_none()
-                                .child(crate::chat::column(
-                                    &self.bridge,
-                                    self.composer.clone(),
-                                    self.model_picker.clone(),
-                                    &self.chat_scroll,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.bridge.toggle_follow();
-                                        cx.notify();
-                                    }),
-                                    cx.listener(|this, _, _, cx| {
-                                        this.bridge.submit("What did I just read?".into(), None);
-                                        cx.notify();
-                                    }),
-                                    navigate_quote,
-                                    retry,
-                                    cx,
-                                )),
-                        ),
+                    }),
                 ),
             )
+            .child(self.orb.clone())
+            .child(self.diagram_viewer.clone())
             .children(self.password_open.then(|| {
                 div()
                     .absolute()

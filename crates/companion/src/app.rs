@@ -33,6 +33,37 @@ pub fn run(path: Option<PathBuf>) {
         .with_assets(AppAssets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
+            if std::env::var("COMPANION_REDUCE_MOTION").as_deref() == Ok("1") {
+                cx.set_reduce_motion(true);
+            } else {
+                let preference = cx.background_executor().spawn(async {
+                    if cfg!(target_os = "macos") {
+                        std::process::Command::new("defaults")
+                            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+                            .output()
+                            .ok()
+                            .is_some_and(|out| {
+                                out.status.success()
+                                    && String::from_utf8_lossy(&out.stdout).trim() == "1"
+                            })
+                    } else {
+                        std::process::Command::new("gsettings")
+                            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                            .output()
+                            .ok()
+                            .is_some_and(|out| {
+                                out.status.success()
+                                    && String::from_utf8_lossy(&out.stdout).trim() == "false"
+                            })
+                    }
+                });
+                cx.spawn(async move |cx| {
+                    if preference.await {
+                        cx.update(|cx| cx.set_reduce_motion(true));
+                    }
+                })
+                .detach();
+            }
             // Component Theme is the shared design-token source for subsequent UI
             // migrations: ActiveTheme::theme().semantic_tokens() supplies spacing,
             // typography and colours. Keep existing hand-rolled styles unchanged.

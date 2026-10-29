@@ -16,6 +16,7 @@ test-mock-provider = ["agent", "companion-agent-host/test-mock-provider"]
 [dependencies]
 companion-agent-host = { path = "../companion-agent-host" }
 serde_json.workspace = true
+roxmltree = "=0.20.0"
 async-channel = "2"
 companion-env = { path = "../companion-env" }
 crossbeam-channel.workspace = true

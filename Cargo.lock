@@ -1062,6 +1062,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "rfd",
+ "roxmltree 0.20.0",
  "serde_json",
  "tracing",
  "tracing-subscriber",

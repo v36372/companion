@@ -23,6 +23,9 @@
   an attached highlight palette popover; removed unused forms/lopdf and box-drag
   area creation while preserving quote highlights and host navigation APIs
   (`src/toolbar.rs`, `src/find_bar.rs`).
+- Companion host: cursor-following agent orb, conditional wide chat surface and
+  safe inline SVG diagrams; closing chat restores the reader's available width
+  without changing the vendored PDF API.
 
 The manifest uses this repository's workspace dependencies and disables
 publishing. Examples are copied unchanged, except `dump_outline` (updated for the

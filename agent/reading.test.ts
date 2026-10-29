@@ -4,6 +4,13 @@ import { ReadingExtension, FollowMode } from './src/extensions/reading.ts';
 import { userInput } from './src/user-content.ts';
 
 describe('reading context', () => {
+  it('offers a bounded, standalone, safe SVG with a brief explanation', async () => {
+    const preamble = ReadingExtension.sections!.find(s => s.key === 'preamble')!;
+    const rendered = await preamble.render({} as never, BACKGROUND_CONTEXT);
+    for (const text of ['ONE ```svg', 'standalone <svg>', 'viewBox', '720 px', 'white <rect>', 'sans-serif', 'no scripts, external images, fonts or links', 'brief text explanation']) {
+      expect(rendered).toContain(text);
+    }
+  });
   const section = ReadingExtension.sections!.find(s => s.key === 'reading')!;
   function input(enabled: boolean) {
     const reads: string[] = [];
