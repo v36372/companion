@@ -2,13 +2,16 @@ use gpui::{Bounds, Pixels, Point, point, px};
 
 #[derive(Debug, PartialEq)]
 pub enum EscapeTarget {
+    Peek,
     Input,
     Selection,
     Abort,
 }
 
-pub fn escape_target(input: bool, selection: bool) -> EscapeTarget {
-    if input {
+pub fn escape_target(peek: bool, input: bool, selection: bool) -> EscapeTarget {
+    if peek {
+        EscapeTarget::Peek
+    } else if input {
         EscapeTarget::Input
     } else if selection {
         EscapeTarget::Selection
@@ -51,9 +54,15 @@ mod tests {
 
     #[test]
     fn escape_order() {
-        assert_eq!(escape_target(true, true), EscapeTarget::Input);
-        assert_eq!(escape_target(false, true), EscapeTarget::Selection);
-        assert_eq!(escape_target(false, false), EscapeTarget::Abort);
+        for input in [false, true] {
+            for selection in [false, true] {
+                assert_eq!(escape_target(true, input, selection), EscapeTarget::Peek);
+            }
+        }
+        assert_eq!(escape_target(false, true, true), EscapeTarget::Input);
+        assert_eq!(escape_target(false, true, false), EscapeTarget::Input);
+        assert_eq!(escape_target(false, false, true), EscapeTarget::Selection);
+        assert_eq!(escape_target(false, false, false), EscapeTarget::Abort);
     }
 
     #[test]

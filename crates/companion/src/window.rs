@@ -31,6 +31,9 @@ use gpui_component::{
 #[path = "sidebar.rs"]
 mod sidebar;
 
+#[path = "edge_sidebar.rs"]
+mod edge_sidebar;
+
 /// Restores seed `last`; observing that same viewport must not schedule a write.
 fn observe_position(last: &mut Option<(u32, f32)>, page: u32, fraction: f32) -> bool {
     let next = Some((page, fraction));
@@ -41,6 +44,7 @@ fn observe_position(last: &mut Option<(u32, f32)>, page: u32, fraction: f32) -> 
 
 pub struct CompanionWindow {
     pdf: Option<CompanionPdf>,
+    edge_sidebar: edge_sidebar::EdgeSidebar,
     focus: FocusHandle,
     window_title: String,
     dialog_open: bool,
@@ -192,6 +196,7 @@ impl CompanionWindow {
         let bridge = Bridge::off();
         let mut view = Self {
             pdf: None,
+            edge_sidebar: edge_sidebar::EdgeSidebar::load(catalog.as_deref()),
             model_picker,
             focus,
             window_title: String::new(),
@@ -1132,6 +1137,15 @@ impl Render for CompanionWindow {
                         }
                         cx.stop_propagation();
                     }
+                    "b" if event.keystroke.modifiers.secondary(cx)
+                        && !window
+                            .context_stack()
+                            .iter()
+                            .any(|context| context.contains("Input")) =>
+                    {
+                        this.toggle_sidebar(window, cx);
+                        cx.stop_propagation();
+                    }
                     "pagedown" => {
                         this.navigate(true, cx);
                         cx.stop_propagation();
@@ -1141,12 +1155,18 @@ impl Render for CompanionWindow {
                         cx.stop_propagation();
                     }
                     "escape" => {
-                        let input = this
-                            .pdf
-                            .as_ref()
-                            .is_some_and(|pdf| pdf.dismiss_input(window, cx));
+                        let peek = this.edge_sidebar.mode(this.document.is_some())
+                            == edge_sidebar::Mode::Peek;
+                        let input = !peek
+                            && this
+                                .pdf
+                                .as_ref()
+                                .is_some_and(|pdf| pdf.dismiss_input(window, cx));
                         let selection = this.pdf.as_ref().is_some_and(|pdf| pdf.has_selection(cx));
-                        match crate::selection_bar::escape_target(input, selection) {
+                        match crate::selection_bar::escape_target(peek, input, selection) {
+                            crate::selection_bar::EscapeTarget::Peek => {
+                                this.hide_sidebar(window, cx)
+                            }
                             crate::selection_bar::EscapeTarget::Input => {}
                             crate::selection_bar::EscapeTarget::Selection => {
                                 this.dismiss_selection(cx)
@@ -1173,6 +1193,7 @@ impl Render for CompanionWindow {
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .child(self.sidebar_toggle("sidebar-toggle", window, cx))
                     .child(
                         Button::new("open-pdf")
                             .outline()
@@ -1203,15 +1224,26 @@ impl Render for CompanionWindow {
                     ),
             )
             .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("reader-panes")
-                        .child(
-                            resizable_panel()
-                                .size(px(240.))
-                                .size_range(px(200.)..px(360.))
-                                .flex_none()
-                                .child(self.render_sidebar(window, cx)),
-                        )
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        h_resizable(if self.sidebar_pinned() {
+                            "reader-panes-pinned"
+                        } else {
+                            "reader-panes"
+                        })
+                        .on_resize(cx.listener(Self::sidebar_resized))
+                        .when(self.sidebar_pinned(), |group| {
+                            group.child(
+                                resizable_panel()
+                                    .size(px(self.edge_sidebar.width))
+                                    .size_range(px(220.)..px(360.))
+                                    .fixed()
+                                    .child(self.render_sidebar(window, cx)),
+                            )
+                        })
                         .child(
                             resizable_panel()
                                 .size_range(px(280.)..gpui::Pixels::MAX)
@@ -1240,7 +1272,8 @@ impl Render for CompanionWindow {
                                     cx,
                                 )),
                         ),
-                ),
+                    )
+                    .child(self.render_edge_sidebar(window, cx)),
             )
             .children(self.password_open.then(|| {
                 div()
