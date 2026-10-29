@@ -5,9 +5,11 @@ use crate::{
 };
 use gpui::{Context, IntoElement, MouseButton, Window, deferred, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable,
+    ActiveTheme, Disableable, Sizable,
     input::{Escape, Input, InputEvent, InputState},
 };
+
+use gpui_kit_assets::IconName;
 
 fn match_count(current: Option<usize>, total: usize) -> String {
     format!("{}/{}", current.map_or(0, |index| index + 1), total)

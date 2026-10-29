@@ -3,12 +3,13 @@ use gpui::{App, Context, Focusable, IntoElement, MouseButton, Window, div, prelu
 #[cfg(feature = "markup")]
 use gpui_component::popover::Popover;
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Selectable, Sizable,
+    ActiveTheme, Disableable, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
 };
 
 use crate::{FitMode, MAX_ZOOM, MIN_ZOOM, PdfView};
+use gpui_kit_assets::IconName;
 
 // Fixed chrome/overlay lanes: neither find nor palette changes the page viewport.
 pub(super) const HEADER_HEIGHT: f32 = 72.;
@@ -70,7 +71,7 @@ impl PdfView {
         total: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         if self.page_input.is_none() {
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -242,10 +243,11 @@ impl PdfView {
                     ),
             )
             .child(controls)
+            .into_any_element()
     }
 
     #[cfg(feature = "markup")]
-    fn palette_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn palette_popover(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let mut colors = div().flex().flex_col().gap_1();
         if self.palette.is_empty() {
             colors = colors.child(div().text_sm().child("Default highlight color"));
@@ -299,6 +301,7 @@ impl PdfView {
             )
             .offset(px(offset + 4.))
             .child(colors)
+            .into_any_element()
     }
 }
 

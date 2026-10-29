@@ -14,6 +14,7 @@ categories = ["gui", "rendering"]
 # Shared workspace spec (the root pins the rev) so Cargo unifies to one gpui.
 gpui = { workspace = true }
 gpui-component = { workspace = true }
+gpui-kit-assets = { workspace = true }
 
 # Pure-Rust PDF rasterizer (no native library, no system-font dependency).
 hayro = { workspace = true }
