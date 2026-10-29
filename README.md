@@ -387,6 +387,7 @@ features from intermediate PRs:
 
 - `crates/companion/` — `learning-companion` binary, GPUI reader/chat and bridge.
 - `crates/companion-pdf/` — viewer wrapper, text/snapshot/selection and fixtures.
+- `crates/pdf-view/` — vendored gpui-pdf 0.6.1; see [provenance and local changes](crates/pdf-view/VENDORED.md).
 - `crates/companion-store/` — SQLite hub, migrations, catalog and preferences.
 - `crates/companion-agent-host/` — Wasmtime host, HTTP policy, secrets and SQLite WIT.
 - `crates/companion-env/` — virtual document filesystem and PDF command bus.
