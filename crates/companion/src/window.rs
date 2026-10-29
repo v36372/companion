@@ -612,21 +612,13 @@ impl CompanionWindow {
                         );
                         if page_0 != this.page_0 {
                             this.goto_explicit(page_0, cx);
-                        } else if let Some(progress) = this
-                            .document
-                            .as_ref()
-                            .and_then(|document| this.navigation.get(&document.id))
-                            .map(|(progress, _)| progress.clone())
+                        } else if let Some(snapshot) =
+                            this.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref())
                         {
-                            // Attaching extraction must not scroll or discard restored progress.
-                            if let Some(snapshot) =
-                                this.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref())
-                            {
-                                snapshot.record_scroll_navigation(
-                                    progress.page_0,
-                                    progress.scroll_frac as f32,
-                                );
-                            }
+                            // Attaching extraction must not scroll or echo a DB write.
+                            let (page, fraction) =
+                                this.observed_position.unwrap_or((this.page_0, 0.0));
+                            snapshot.record_scroll_navigation(page, fraction);
                         }
                         if let (Some(fs), Some(doc)) = (&this.doc_env, &this.document) {
                             this.bridge.switch_document(Attachment {
@@ -669,6 +661,7 @@ impl CompanionWindow {
             return;
         };
         self.page_0 = page_0;
+        self.observed_position = Some((page_0, 0.0));
         pdf.goto_page_0(page_0 as usize, cx);
         self.persist_navigation(
             ReadingProgress {

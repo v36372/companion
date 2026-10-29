@@ -107,6 +107,27 @@ mod tests {
     }
 
     #[test]
+    fn small_fraction_changes_coalesce_and_zoom_preserves_fraction() {
+        let dims = [(612.0, 792.0)];
+        let mut changes = Coalescer::default();
+        for (index, fraction) in [0.0, 0.01, 0.02, 0.04, 0.06].into_iter().enumerate() {
+            let y = PAGE_PAD_Y + display_height(dims[0], PAGE_WIDTH) * fraction;
+            assert_eq!(
+                changes.observe(position(&dims, PAGE_WIDTH, y)),
+                index == 0 || index == 4
+            );
+        }
+        for width in [PAGE_WIDTH, PAGE_WIDTH * 3.0] {
+            let y = PAGE_PAD_Y + display_height(dims[0], width) * 0.36;
+            assert_eq!(position(&dims, width, y), Position { page: 0, bucket: 7 });
+        }
+        assert_eq!(
+            position(&[], PAGE_WIDTH, 0.0),
+            Position { page: 0, bucket: 0 }
+        );
+    }
+
+    #[test]
     fn sampling_coalesces_and_deduplicates() {
         let mut changes = Coalescer::default();
         let first = Position { page: 0, bucket: 0 };
