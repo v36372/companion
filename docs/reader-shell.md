@@ -42,16 +42,21 @@ case the viewer header uses the original source stem; after unlock, snapshot
 metadata updates the window/catalog title. The immutable upstream viewer path
 cannot be renamed in-place without replacing the unlocked viewer.
 
-## Upstream limitations (no vendoring)
+## Reading position
 
-Reading position follows explicit app navigation only: Page Up/Page Down, the
-app outline, quote links, agent navigation and restore. Viewer header arrows,
-the editable page counter, built-in outline, search jumps and wheel scrolling
-cannot update that state. Agent context continues to identify it as explicit
-navigation, not the live scroll viewport. Supporting all viewer navigation needs
-an upstream gpui-pdf page getter/event: `current_page_index`, `scroll`, `dims` and
-`zoom` are private, and `PdfEvent` has no navigation event.
+The vendored viewer samples its visible page and in-page scroll fraction every
+150 ms (fractions are rounded down to 5% steps), emitting only changes outside
+layout/render. Wheel scrolling, scrollbar drags, viewer arrows, editable page
+counter, outline and search jumps all update the app counter, current sidebar
+section and the shared viewport used by Follow and “What did I just read?”.
+Scrolling never submits an agent question automatically.
+
+Progress saves after a one-second idle debounce and flushes on normal quit.
+Reopening restores the saved page (not the exact in-page fraction); restoring or
+attaching text extraction does not itself schedule a progress write.
+
+## Viewer layout limitations
 
 The upstream header is not responsive at very narrow viewer widths. Its own
 search bar also controls its internal page-area height. These are upstream
-layout behaviors; the app does not crop, fork, or duplicate those controls.
+layout behaviors in the vendored viewer.

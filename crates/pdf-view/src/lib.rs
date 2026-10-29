@@ -62,6 +62,7 @@ mod links;
 pub use links::{
     LinkTarget, PageDestination, PdfLink, destination_on_page, is_safe_external_uri, page_links,
 };
+mod page_events;
 
 #[cfg(feature = "forms")]
 mod forms;
@@ -505,6 +506,11 @@ pub enum PdfEvent {
     LockChanged,
     /// A user clicked a page annotation. Hosts resolve names and track navigation.
     LinkClicked(LinkTarget),
+    /// Visible zero-based page / coarse in-page fraction, sampled at most every 150ms.
+    PageChanged {
+        page: usize,
+        scroll_frac: f32,
+    },
     /// The file couldn't be read or parsed (see [`PdfView::load_error`]) —
     /// terminal for this view; the viewer shows the message in place of the
     /// loading placeholder. Also fired when a retry-unlock fails with a
@@ -659,6 +665,7 @@ impl PdfView {
         quality: PdfQualityFn,
         cx: &mut Context<Self>,
     ) -> Self {
+        page_events::start(cx);
         let load_path = path.clone();
         cx.spawn(async move |this, cx| {
             // Read the file off-thread, keep the bytes (so an encrypted PDF can be
@@ -1595,7 +1602,7 @@ impl PdfView {
     }
 
     /// The topmost visible page index for the current scroll position.
-    fn current_page_index(&self) -> usize {
+    pub fn current_page_index(&self) -> usize {
         let scroll_y = f32::from(-self.scroll.offset().y);
         current_page(&self.dims, self.page_width(), scroll_y)
     }
