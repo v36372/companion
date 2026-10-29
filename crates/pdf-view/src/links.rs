@@ -294,7 +294,13 @@ mod tests {
             .join(" "),
             0,
         );
-        assert_eq!(page_links(&doc)[0].len(), 2);
+        let links = page_links(&doc);
+        assert_eq!(links[0].len(), 2);
+        assert_eq!(
+            links[0][0].target,
+            LinkTarget::Uri("https://example.org".into())
+        );
+        assert_eq!(links[0][1].target, LinkTarget::Uri("mailto:a@b.org".into()));
         for good in [
             "https://example.org",
             "HTTP://example.org",
@@ -313,6 +319,31 @@ mod tests {
             "mailto:",
         ] {
             assert!(!is_safe_external_uri(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn explicit_position_kinds_and_clamping() {
+        for (array, y) in [
+            ("[4 0 R /XYZ null 150 null]", Some(0.25)),
+            ("[4 0 R /FitR 0 20 80 180]", Some(0.1)),
+            ("[4 0 R /FitBH 100]", Some(0.5)),
+            ("[4 0 R /Fit]", None),
+            ("[4 0 R /FitV 20]", None),
+            ("[4 0 R /XYZ 0 250 null]", Some(0.0)),
+            ("[4 0 R /XYZ 0 -50 null]", Some(1.0)),
+        ] {
+            let doc = fixture(&annotation(&format!("/Dest {array}")), 0);
+            let links = page_links(&doc);
+            let LinkTarget::Destination(destination) = &links[0][0].target else {
+                panic!("missing destination")
+            };
+            assert_eq!(destination.page, 1);
+            match (destination.y, y) {
+                (Some(a), Some(b)) => assert!((a - b).abs() < 0.0001, "{array}"),
+                (None, None) => (),
+                _ => panic!("wrong position for {array}"),
+            }
         }
     }
 
