@@ -179,6 +179,7 @@ fn lazy_cache_prefills_current_first_and_refreshes_without_navigation() {
     assert!(snapshot.page_if_ready(0).is_none());
     assert!(snapshot.page_if_ready(1).is_none());
     snapshot.record_scroll_navigation(0, 0.4);
+    snapshot.viewport.write().unwrap().updated_at_ms = 123;
     let before = snapshot.viewport.read().unwrap().clone();
     assert!(before.excerpt.is_empty());
     let order = std::sync::Mutex::new(Vec::new());
