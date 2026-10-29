@@ -23,11 +23,11 @@ pub enum PageColors {
 /// Input/output are opaque BGRA, after compositing the PDF onto white.
 fn darken_bgra(pixels: &mut [u8]) {
     for p in pixels.chunks_exact_mut(4) {
-        let low = *p[..3].iter().min().unwrap() as i16;
-        let high = *p[..3].iter().max().unwrap() as i16;
+        let low = *p[..3].iter().min().unwrap() as i32;
+        let high = *p[..3].iter().max().unwrap() as i32;
         let shift = 255 - low - high;
         for channel in &mut p[..3] {
-            let inverted = *channel as i16 + shift;
+            let inverted = *channel as i32 + shift;
             *channel = (28 + (inverted * 204 + 127) / 255) as u8;
         }
     }
