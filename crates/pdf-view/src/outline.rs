@@ -10,8 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hayro::hayro_syntax::Pdf;
-use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Name, ObjRef, Rect, String as PdfString};
-use hayro::hayro_syntax::page::Rotation;
+use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, ObjRef, String as PdfString};
 
 /// One entry in a PDF's outline, flattened depth-first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,118 +101,6 @@ fn dest_array_page(dest: &Array, page_index: &HashMap<ObjRef, usize>) -> Option<
     }
 }
 
-/// Where a clickable PDF link points.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LinkTarget {
-    /// A 0-based page index within this document.
-    Page(usize),
-    /// An external URI.
-    Uri(String),
-}
-
-/// A clickable `/Link` annotation: its rectangle in normalized page coordinates
-/// (0..1 of the crop box, top-left origin, matching the rendered image) and target.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PdfLink {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-    pub target: LinkTarget,
-}
-
-/// Extract the clickable `/Link` annotations for every page, indexed by page;
-/// pages with none get an empty vec. Rotated pages are skipped for now (their
-/// annotation rectangles would need rotating to line up with the render).
-pub fn page_links(doc: &Pdf) -> Vec<Vec<PdfLink>> {
-    let page_index = build_page_index(doc);
-    let mut out = Vec::with_capacity(doc.pages().len());
-    for page in doc.pages().iter() {
-        let mut links = Vec::new();
-        let cb = page.crop_box();
-        let (pw, ph) = (cb.width(), cb.height());
-        if !matches!(page.rotation(), Rotation::None) || pw <= 0.0 || ph <= 0.0 {
-            out.push(links);
-            continue;
-        }
-        if let Some(annots) = page.raw().get::<Array>("Annots") {
-            for annot in annots.iter::<Dict>() {
-                if annot
-                    .get::<Name>("Subtype")
-                    .is_none_or(|n| n.as_str() != "Link")
-                {
-                    continue;
-                }
-                let (Some(target), Some(r)) =
-                    (link_target(&annot, &page_index), annot.get::<Rect>("Rect"))
-                else {
-                    continue;
-                };
-                // `/Rect` is in PDF user space (bottom-left origin); normalize to the
-                // crop box with a top-left origin so it overlays the rendered page.
-                let (ax0, ax1) = (r.x0.min(r.x1), r.x0.max(r.x1));
-                let (ay0, ay1) = (r.y0.min(r.y1), r.y0.max(r.y1));
-                links.push(PdfLink {
-                    x: (((ax0 - cb.x0) / pw) as f32).clamp(0.0, 1.0),
-                    y: (((cb.y1 - ay1) / ph) as f32).clamp(0.0, 1.0),
-                    w: (((ax1 - ax0) / pw) as f32).clamp(0.0, 1.0),
-                    h: (((ay1 - ay0) / ph) as f32).clamp(0.0, 1.0),
-                    target,
-                });
-            }
-        }
-        out.push(links);
-    }
-    out
-}
-
-/// Whether a `/URI` action may reach the OS URL opener (`NSWorkspace openURL:`
-/// / `ShellExecute`). A PDF is entirely attacker-authored — including the
-/// clickable overlay's position and size — so this is an allowlist: only
-/// `http://` and `https://`, schemes compared case-insensitively per RFC 3986.
-/// Everything else is rejected (`file:` launches local content, `smb:` leaks
-/// NTLM hashes on Windows, `javascript:`/`data:`/app-registered schemes like
-/// `ms-msdt:` run handlers). Whitespace and control characters anywhere are a
-/// rejection, not something to trim: openers strip them, so ` javascript:…`
-/// would otherwise walk past the prefix check.
-///
-/// Deliberately duplicated from `zorite_markdown::syntax::is_safe_external_url`
-/// — five lines is cheaper than the cross-crate dependency the crates rule
-/// forbids. Keep the two in step.
-fn is_safe_external_uri(uri: &str) -> bool {
-    !uri.chars().any(|c| c.is_whitespace() || c.is_control())
-        && ["http://", "https://"].iter().any(|scheme| {
-            uri.as_bytes()
-                .get(..scheme.len())
-                .is_some_and(|got| got.eq_ignore_ascii_case(scheme.as_bytes()))
-        })
-}
-
-/// Resolve a `/Link` annotation's target: `/Dest`, or an `/A` action (`/URI` for
-/// external links, `/GoTo` for internal jumps).
-fn link_target(annot: &Dict, page_index: &HashMap<ObjRef, usize>) -> Option<LinkTarget> {
-    if let Some(dest) = annot.get::<Array>("Dest") {
-        return dest_array_page(&dest, page_index).map(LinkTarget::Page);
-    }
-    let action = annot.get::<Dict>("A")?;
-    match action.get::<Name>("S").as_ref().map(|n| n.as_str()) {
-        Some("URI") => {
-            let uri = decode_pdf_string(action.get::<PdfString>("URI")?.as_bytes());
-            if !is_safe_external_uri(&uri) {
-                // Dropped here rather than at the click: no annotation, no
-                // overlay, so a hostile URI never even reads as clickable.
-                log::warn!("pdf: dropped link annotation with unsupported URI scheme");
-                return None;
-            }
-            Some(LinkTarget::Uri(uri))
-        }
-        Some("GoTo") => {
-            dest_array_page(&action.get::<Array>("D")?, page_index).map(LinkTarget::Page)
-        }
-        _ => None,
-    }
-}
-
 /// Map every page's object reference to its 0-based index by walking the page
 /// tree, so destinations (which reference a page by object ref) can be resolved.
 fn build_page_index(doc: &Pdf) -> HashMap<ObjRef, usize> {
@@ -295,24 +182,5 @@ mod tests {
     fn latin1_decodes_and_trims() {
         assert_eq!(decode_pdf_string(b"  Intro  "), "Intro");
         assert_eq!(decode_pdf_string(&[b'C', 0xE9]), "Cé"); // 0xE9 = é in Latin-1
-    }
-
-    #[test]
-    fn only_http_uris_survive() {
-        assert!(is_safe_external_uri("https://example.com"));
-        assert!(is_safe_external_uri("HTTP://EXAMPLE.COM"));
-        for bad in [
-            "file:///etc/passwd",
-            "smb://evil/share",
-            "javascript:alert(1)",
-            "mailto:a@b.c",
-            "//evil.com",
-            r"\\evil\share",
-            " javascript:alert(1)",
-            "java\tscript:x",
-            "",
-        ] {
-            assert!(!is_safe_external_uri(bad), "should reject {bad:?}");
-        }
     }
 }

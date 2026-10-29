@@ -46,14 +46,21 @@ use image::{Frame, RgbaImage};
 #[cfg(feature = "markup")]
 use gpui::MouseMoveEvent;
 
+mod recolor;
 #[cfg(feature = "markup")]
 mod text;
+pub use recolor::PageColors;
 #[cfg(feature = "markup")]
 pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
 /// PDF outline / table-of-contents + link extraction (always available — no deps).
 mod outline;
-pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
+pub use outline::{OutlineItem, outline};
+mod links;
+pub use links::{
+    LinkTarget, PageDestination, PdfLink, destination_on_page, is_safe_external_uri, page_links,
+};
+mod page_events;
 
 #[cfg(feature = "search")]
 mod find_bar;
@@ -114,7 +121,7 @@ fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
     let doc = parse_with_password(bytes, password)?;
     let dims = page_dims(&doc);
     let toc = crate::outline::outline(&doc);
-    let links = crate::outline::page_links(&doc);
+    let links = page_links(&doc);
     Ok(Prepared {
         doc,
         dims,
@@ -334,7 +341,7 @@ const MAX_RENDER_SCALE: f32 = 4.0;
 struct Slot {
     /// Last rasterized bitmap (may be a stale scale during a re-render); shown scaled
     /// meanwhile. `None` when never rendered or evicted.
-    image: Option<Arc<RenderImage>>,
+    image: Option<recolor::PageRaster>,
     /// Generation `image` was rendered at; if it differs from the view's generation,
     /// the bitmap is stale and the page is re-rendered (while still shown).
     image_gen: u64,
@@ -346,6 +353,8 @@ struct Slot {
 /// is a neutral dark palette.
 #[derive(Clone, Copy)]
 pub struct PdfStyle {
+    /// Palette for page pixels, cached independently of rasterization scale.
+    pub page_colors: PageColors,
     /// Viewer background.
     pub bg: Hsla,
     /// Page-slot border and the header divider.
@@ -363,6 +372,7 @@ pub struct PdfStyle {
 impl Default for PdfStyle {
     fn default() -> Self {
         Self {
+            page_colors: PageColors::Normal,
             bg: hsla(0.0, 0.0, 0.12, 1.0),
             border: hsla(0.0, 0.0, 1.0, 0.10),
             placeholder_bg: hsla(0.0, 0.0, 1.0, 0.04),
@@ -460,6 +470,13 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// A user clicked a page annotation. Hosts resolve names and track navigation.
+    LinkClicked(LinkTarget),
+    /// Visible zero-based page / coarse in-page fraction, sampled at most every 150ms.
+    PageChanged {
+        page: usize,
+        scroll_frac: f32,
+    },
     /// The file couldn't be read or parsed (see [`PdfView::load_error`]) —
     /// terminal for this view; the viewer shows the message in place of the
     /// loading placeholder. Also fired when a retry-unlock fails with a
@@ -502,6 +519,7 @@ pub struct PdfView {
     /// from the thumb's top at grab time, so the thumb tracks the cursor. `None` when
     /// not dragging the scrollbar.
     scrollbar_drag: Option<f32>,
+    horizontal_drag: Option<f32>,
     /// Active zoom-to-fit mode: re-fits on every viewport resize until a
     /// manual zoom clears it.
     fit: Option<FitMode>,
@@ -597,6 +615,7 @@ impl PdfView {
         quality: PdfQualityFn,
         cx: &mut Context<Self>,
     ) -> Self {
+        page_events::start(cx);
         let load_path = path.clone();
         cx.spawn(async move |this, cx| {
             // Read the file off-thread, keep the bytes (so an encrypted PDF can be
@@ -652,6 +671,7 @@ impl PdfView {
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
             scrollbar_drag: None,
+            horizontal_drag: None,
             fit: None,
             fit_viewport: (0.0, 0.0),
             zoom: 1.0,
@@ -726,7 +746,7 @@ impl PdfView {
         } else {
             for slot in std::mem::replace(&mut self.pages, vec![Slot::default(); n]) {
                 if let Some(arc) = slot.image {
-                    self.pending_drops.push(arc);
+                    self.pending_drops.extend(arc.images());
                 }
             }
         }
@@ -1145,7 +1165,7 @@ impl PdfView {
                 return Some((
                     i,
                     NormPoint {
-                        x: ((f32::from(pos.x) - left) / w).clamp(0.0, 1.0),
+                        x: ((f32::from(pos.x - self.scroll.offset().x) - left) / w).clamp(0.0, 1.0),
                         y: ((probe - top) / h).clamp(0.0, 1.0),
                     },
                 ));
@@ -1206,8 +1226,10 @@ impl PdfView {
             cx.drop_image(arc, Some(window));
         }
         for slot in std::mem::take(&mut self.pages) {
-            if let Some(arc) = slot.image {
-                cx.drop_image(arc, Some(window));
+            if let Some(raster) = slot.image {
+                for arc in raster.images() {
+                    cx.drop_image(arc, Some(window));
+                }
             }
         }
     }
@@ -1222,14 +1244,16 @@ impl PdfView {
             cx.drop_image(arc, Some(window));
         }
         for slot in &self.pages {
-            if let Some(arc) = &slot.image {
-                cx.drop_image(arc.clone(), Some(window));
+            if let Some(raster) = &slot.image {
+                for arc in raster.clone().images() {
+                    cx.drop_image(arc, Some(window));
+                }
             }
         }
     }
 
-    /// Set the zoom factor (clamped), keeping the current page in view. Visible pages
-    /// re-render crisp at the new scale; their current bitmaps stay on screen
+    /// Set the zoom factor (clamped), preserving the viewport centre where possible.
+    /// Visible pages re-render crisp at the new scale; their current bitmaps stay on screen
     /// (rescaled) until the fresh ones land, so nothing blanks.
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         // A manual zoom takes over from any active fit mode.
@@ -1242,10 +1266,10 @@ impl PdfView {
         if (z - self.zoom).abs() < 0.001 {
             return;
         }
-        let anchor = self.current_page_index();
+        let offset = self.zoom_offset(z);
         self.zoom = z;
         self.generation = self.generation.wrapping_add(1);
-        self.go_to_page(anchor, cx);
+        self.scroll.set_offset(offset);
         cx.notify();
     }
 
@@ -1339,6 +1363,26 @@ impl PdfView {
         cx.notify();
     }
 
+    /// The loaded, unlocked document, shared for off-thread destination resolution.
+    pub fn document(&self) -> Option<Arc<Document>> {
+        self.pdf.clone()
+    }
+
+    /// Jump to a normalized top-origin destination position.
+    pub fn go_to_destination(&mut self, destination: PageDestination, cx: &mut Context<Self>) {
+        self.go_to_page(destination.page, cx);
+        if let Some(y) = destination.y.filter(|y| y.is_finite())
+            && let Some(dims) = self.dims.get(destination.page)
+        {
+            let width = self.page_width();
+            let offset = page_top_y(&self.dims, width, destination.page)
+                + y.clamp(0.0, 1.0) * display_height(*dims, width);
+            self.scroll
+                .set_offset(point(self.scroll.offset().x, px(-offset)));
+            cx.notify();
+        }
+    }
+
     /// Toggle the table-of-contents (outline) panel.
     pub fn toggle_toc(&mut self, cx: &mut Context<Self>) {
         self.toc_open = !self.toc_open;
@@ -1416,7 +1460,7 @@ impl PdfView {
     }
 
     /// The topmost visible page index for the current scroll position.
-    fn current_page_index(&self) -> usize {
+    pub fn current_page_index(&self) -> usize {
         let scroll_y = f32::from(-self.scroll.offset().y);
         current_page(&self.dims, self.page_width(), scroll_y)
     }
@@ -1487,7 +1531,7 @@ impl PdfView {
                 }
             } else if let Some(arc) = slot.image.take() {
                 slot.image_gen = 0;
-                to_evict.push(arc);
+                to_evict.extend(arc.images());
             }
         }
         for arc in to_evict {
@@ -1509,7 +1553,11 @@ impl PdfView {
             cx.spawn(async move |this, cx| {
                 let page = cx
                     .background_executor()
-                    .spawn(async move { render_page(&pdf, i, scale).ok() })
+                    .spawn(async move {
+                        render_page(&pdf, i, scale)
+                            .ok()
+                            .map(recolor::PageRaster::new)
+                    })
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     // Store only if still wanted: same generation (scale unchanged)
@@ -1537,7 +1585,7 @@ impl PdfView {
                     // The replaced bitmap was painted, so its atlas texture must be
                     // freed — defer to the next `ensure_window` (which has a Window).
                     if let Some(old) = retired {
-                        this.pending_drops.push(old);
+                        this.pending_drops.extend(old.images());
                     }
                     cx.notify();
                 });
@@ -1587,6 +1635,7 @@ impl Render for PdfView {
         // `display_height`. That sum drifts from gpui's pixel-snapped layout (~0.18px per
         // Letter page → ~2 text rows off by page 150 of a long PDF).
         let mut slots: Vec<gpui::AnyElement> = Vec::with_capacity(self.dims.len());
+        let center_pad = ((f32::from(self.scroll.bounds().size.width) - page_width) / 2.0).max(0.0);
         for (i, dim) in self.dims.iter().enumerate() {
             let disp_h = display_height(*dim, page_width);
             let slot = div()
@@ -1594,6 +1643,9 @@ impl Render for PdfView {
                 // The scroll container is now a flex column, so pages must NOT shrink to
                 // fit the viewport — keep their full height and let the column overflow.
                 .flex_shrink_0()
+                // Center pages that fit; overflowing pages start at the left
+                // edge so the whole page stays reachable by horizontal scroll.
+                .ml(px(center_pad))
                 .w(px(page_width))
                 .h(px(disp_h))
                 .rounded(px(2.0))
@@ -1601,7 +1653,11 @@ impl Render for PdfView {
                 .border_color(style.border)
                 .overflow_hidden();
             let slot = match self.pages.get(i).and_then(|s| s.image.as_ref()) {
-                Some(image) => slot.child(img(image.clone()).w(px(page_width)).h(px(disp_h))),
+                Some(image) => slot.child(
+                    img(image.image(style.page_colors))
+                        .w(px(page_width))
+                        .h(px(disp_h)),
+                ),
                 // No bitmap yet: a sized placeholder so layout is stable; it fills in
                 // once rasterized.
                 None => slot
@@ -1731,9 +1787,16 @@ impl Render for PdfView {
                             .rounded(px(2.0))
                             .cursor_pointer()
                             .hover(|h| h.bg(hsla(0.58, 0.9, 0.55, 0.12)))
-                            .on_click(cx.listener(move |this, _, _window, cx| match &target {
-                                LinkTarget::Page(p) => this.go_to_page(*p, cx),
-                                LinkTarget::Uri(u) => cx.open_url(u),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    window.focus(&this.focus, cx);
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .on_click(cx.listener(move |_this, _, _window, cx| {
+                                cx.stop_propagation();
+                                cx.emit(PdfEvent::LinkClicked(target.clone()));
                             })),
                     );
                 }
@@ -1759,6 +1822,10 @@ impl Render for PdfView {
                     #[cfg(feature = "markup")]
                     if this.selecting
                         && let Some((pg, n)) = this.point_to_page(_ev.position)
+                        && !this
+                            .links
+                            .get(pg)
+                            .is_some_and(|links| links.iter().any(|link| link.contains(n.x, n.y)))
                     {
                         this.sel_drag = Some((pg, n, n));
                         cx.notify();
@@ -1951,12 +2018,15 @@ impl Render for PdfView {
                                 let thumb_top =
                                     (pointer - m.track_top - grab).clamp(0.0, m.thumb_max_travel);
                                 let scroll_y = thumb_top / m.thumb_max_travel * m.max_scroll;
-                                this.scroll.set_offset(point(px(0.0), px(-scroll_y)));
+                                this.scroll
+                                    .set_offset(point(this.scroll.offset().x, px(-scroll_y)));
                                 cx.notify();
                             },
                         )),
                 )
         });
+
+        let horizontal_scrollbar = self.horizontal_scrollbar(style, cx);
 
         // "Scroll to top": a floating button over the page area, shown once scrolled
         // down past half a viewport. Jumps to the document top (also bound to Home).
@@ -2053,18 +2123,19 @@ impl Render for PdfView {
                             .relative()
                             .flex_1()
                             .min_h_0()
+                            .min_w_0()
                             .child(
                                 div()
                                     .id("pdf-scroll")
                                     .size_full()
-                                    .overflow_y_scroll()
+                                    .overflow_scroll()
                                     .track_scroll(&self.scroll)
                                     // The page column lives directly on the scroll element
                                     // (not nested) so each page is a tracked scroll item —
                                     // `point_to_page` reads real bounds via `bounds_for_item`.
                                     .flex()
                                     .flex_col()
-                                    .items_center()
+                                    .items_start()
                                     .gap(px(PAGE_GAP))
                                     .py(px(PAGE_PAD_Y))
                                     // Scrolling doesn't re-run render on its own; notify so
@@ -2074,7 +2145,9 @@ impl Render for PdfView {
                                     }))
                                     .children(slots),
                             )
+                            .child(self.shift_scroll_listener(cx))
                             .children(scrollbar)
+                            .children(horizontal_scrollbar)
                             .children(scroll_top_btn),
                     ),
             )

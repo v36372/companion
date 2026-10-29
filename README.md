@@ -4,8 +4,7 @@ A native Rust/GPUI PDF reader with a reading companion agent: Pi Durable 1.4.0
 is compiled from TypeScript into a WASM component and hosted by Wasmtime in the
 app, not a sidecar. The reader and durable conversations share SQLite;
 OpenRouter supplies model responses and optional Brave Search supplies web
-results. The agent can read the current document, follow your explicit page
-navigation, answer selected passages, and navigate or highlight through PDF tools.
+results. The agent can read the current document, follow your page navigation and scrolling, answer selected passages, and navigate or highlight through PDF tools.
 
 Implemented through PR0–PR11. See the [product vision](docs/VISION.md),
 [design](docs/design.md), and implementation differences below.
@@ -185,11 +184,10 @@ sandbox against malicious model instructions.
 - **Outline:** click a destination in the left rail to jump to its page.
 - **Find:** **Cmd-F / Ctrl-F** or toolbar **Find** opens the embedded viewer's
   search bar, including when the chat composer has focus.
-- **Reading progress:** app **Previous/Next**, **Page Up/Page Down**, outline,
-  quote chips and agent navigation use the tracked explicit-page path. Progress
-  saves after a 500 ms debounce, flushes on normal quit, and restores on reopen.
-  Wheel scrolling and the embedded viewer's own toolbar, links and search-result
-  jumps are **not tracked**.
+- **Reading progress:** scrolling and viewer navigation update the page counter,
+  sidebar section and agent viewport, sampled every 150 ms. Progress saves after
+  a one-second idle debounce, flushes on normal quit, and restores the saved page
+  on reopen (not the exact in-page fraction).
 - **Quote highlights:** drag text, then click **Highlight** to persist and paint
   the quote; highlights restore on reopen, even without an agent. Repeating a
   highlight does not create another row or change the original color.
@@ -202,11 +200,11 @@ sandbox against malicious model instructions.
   into the pane, alongside short PDF/search tool traces.
 - **Follow:** the pane's **Follow: on/off** toggle persists per conversation
   (default on). When on, the next request includes a bounded reading section with
-  the last explicit page, excerpt and selection. It does not know your wheel
-  position. Page turns/scrolling never submit a question automatically.
+  the visible page, excerpt and selection, including wheel-scrolled pages.
+  Page turns/scrolling never submit a question automatically.
   **What did I just read?** submits a question independently of the Follow flag.
 - **Scanned pages:** a “This page has no text” banner above the viewer describes
-  the last explicit page. No OCR is implemented; tools report `no_text_layer`.
+  the visible page. No OCR is implemented; tools report `no_text_layer`.
 - **Password PDFs:** enter the password in the masked modal and press **Enter**
   or **Unlock**. Wrong/missing passwords leave it open. Passwords are memory-only,
   never stored in SQLite or passed to the agent; reopening after launch asks again.
@@ -220,6 +218,18 @@ The agent has a read-only virtual `/doc`, durable SQLite-backed `/notes`,
 session-local `/tmp`, a read tool and seven `pdf_*` tools. There is no general
 shell/CodingTools access. See [chat](docs/chat.md), [reader UX](docs/reader-ux.md)
 and [virtual document filesystem](docs/virtual-doc-fs.md) for details.
+
+### Appearance and zoomed pages
+
+Launch with `COMPANION_THEME=dark` to use dark chrome and dark PDF pages even
+on a light desktop, or `COMPANION_THEME=light` for original page colours.
+Dark pages invert lightness while preserving hue (photographs retain their hue,
+but their tones invert). Theme changes select cached pixels without reloading
+the document. Highlights and search emphasis remain coloured overlays.
+
+At high zoom, pan horizontally with **Shift + wheel**, a trackpad's horizontal
+scroll gesture, or the draggable scrollbar along the viewer's bottom edge.
+The right-edge scrollbar continues to navigate vertically.
 
 ## Data and configuration
 
@@ -239,6 +249,7 @@ on Linux, `$XDG_DATA_HOME/learning-companion` or
 | --- | --- |
 | `COMPANION_AGENT` | `wasm` (default) or `off`; other values are errors. WASM still requires the `agent` feature. |
 | `COMPANION_DATA_DIR` | Override the data root, useful for isolated/headless runs. |
+| `COMPANION_THEME` | `dark`, `light`, or `system` (default). Forces the whole window and PDF page palette; `system` follows live OS appearance changes. Invalid values warn and use `system`. |
 | `COMPANION_CACHE_DIR` | Override the OS app cache root (separate from data). Compiled agent artifacts live in `components/`. |
 | `COMPANION_COMPONENT_CACHE` | `off` disables persistent component caching; otherwise enabled on Unix. |
 | `COMPANION_OPENROUTER_API_KEY` | Host keychain fallback for OpenRouter. |
@@ -332,9 +343,8 @@ requests or credentials; [chat.md](docs/chat.md) describes the local UI smoke.
   outbound HTTPS.
 - CI's macOS release smoke checks no-key window creation and liveness, not
   interactive Keychain approval, app-menu actions or file-dialog interaction.
-- Scans have no OCR. Progress, Follow and the scanned-page banner describe
-  explicit navigation, not the live scroll viewport. Upstream accessors/events
-  are still missing; the upstream issue was drafted, not posted.
+- Scans have no OCR. Live viewport tracking is coarse (150 ms / 5% fraction
+  steps); restore returns to the saved page, not the exact scroll fraction.
 - The first agent launch still compiles the component (roughly **70–80 seconds**
   on the small build VM). Subsequent Unix launches use a private on-disk native
   component cache, keyed by Wasm content and engine compatibility; invalid or
@@ -358,9 +368,9 @@ features from intermediate PRs:
 - Rust moved from the 1.85 floor to **1.95.0**; GPUI/platform are both pinned at
   **0.3.10** with the component family at **0.8.1**. Vendored gpui-pdf 0.6.1
   includes the modifier/scroll API adaptations recorded in its `VENDORED.md`.
-- The PDF is parsed separately for the viewer and our snapshot. Missing viewport
-  and overlay hooks mean explicit-navigation tracking and an adjacent banner,
-  rather than scroll-aware tracking or per-page overlays.
+- The PDF is parsed separately for the viewer and our snapshot. The vendored
+  viewer now publishes scroll-aware viewport events; the scanned-page banner
+  remains adjacent to the viewer rather than a per-page overlay.
 - `GlyphBox` payloads contain normalized **line rectangles**, not raw glyph boxes.
 - `COMPANION_DATA_DIR` was added for isolation; native keys remain host-only.
 - StarlingMonkey requires a reader-based stream adapter, a replacement for broken

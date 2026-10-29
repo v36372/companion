@@ -31,7 +31,9 @@ fn main() {
     let (mut internal, mut external) = (0, 0);
     for l in links.iter().flatten() {
         match l.target {
-            gpui_pdf::LinkTarget::Page(_) => internal += 1,
+            gpui_pdf::LinkTarget::Page(_)
+            | gpui_pdf::LinkTarget::Destination(_)
+            | gpui_pdf::LinkTarget::Named(_) => internal += 1,
             gpui_pdf::LinkTarget::Uri(_) => external += 1,
         }
     }
