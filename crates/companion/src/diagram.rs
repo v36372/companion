@@ -111,7 +111,14 @@ pub fn validate(source: &str) -> Option<f32> {
         Some((length("width")?, length("height")?))
     });
     let (width, height) = dimensions.unwrap_or((720., 400.));
-    (width.is_finite() && height.is_finite() && width > 0. && height > 0.).then_some(width / height)
+    let ratio = width / height;
+    (width.is_finite()
+        && height.is_finite()
+        && width > 0.
+        && height > 0.
+        && ratio.is_finite()
+        && ratio > 0.)
+        .then_some(ratio)
 }
 fn parse(node: &Node) -> Option<MarkdownNode> {
     let Node::Code(code) = node else {
@@ -330,6 +337,8 @@ mod tests {
     }
     #[test]
     fn rejects_untrusted_resources_and_bad_xml() {
+        assert!(validate("<svg width='1e38' height='1e-38'/>").is_none());
+        assert!(validate("<svg width='1e-38' height='1e38'/>").is_none());
         for source in [
             "<not-svg/>",
             "<!DOCTYPE svg><svg/>",
