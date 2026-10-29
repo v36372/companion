@@ -312,6 +312,7 @@ impl CompanionWindow {
             .children((mode == Mode::Hidden).then(|| {
                 let leave = runtime.clone();
                 let movement = runtime.clone();
+                let press = runtime.clone();
                 div()
                     .id("sidebar-hot-zone")
                     .absolute()
@@ -319,6 +320,16 @@ impl CompanionWindow {
                     .top_0()
                     .bottom_0()
                     .w(px(8.))
+                    .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
+                        // A press during dwell must cancel it even before the
+                        // first drag move (e.g. grabbing a scrollbar at x=2).
+                        this.edge_sidebar.pointer(
+                            true,
+                            false,
+                            true,
+                            press.read(cx).clock.elapsed(),
+                        );
+                    }))
                     .on_mouse_move(
                         cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
                             this.edge_sidebar.pointer(
@@ -442,6 +453,9 @@ mod tests {
     fn pressed_button_blocks_dwell_and_protection_restarts_leave_delay() {
         let mut state = EdgeSidebar::default();
         state.pointer(true, false, true, ms(0));
+        assert!(!state.tick(ms(50), false));
+        state.pointer(true, false, false, ms(100));
+        state.pointer(true, false, true, ms(150)); // Press during dwell, before moving.
         assert!(!state.tick(ms(500), false));
         state.pointer(true, false, false, ms(600));
         state.tick(ms(750), false);
