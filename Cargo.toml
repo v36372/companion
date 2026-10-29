@@ -9,6 +9,10 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+# Rust 1.95 compatibility for three upstream macOS-only map_or_default calls.
+gpui-pre-macos = { path = "crates/patches/gpui-pre-macos" }
+
 # GPUI, hayro and Wasmtime are too slow unoptimised for an interactive GUI.
 [profile.dev]
 opt-level = 1
