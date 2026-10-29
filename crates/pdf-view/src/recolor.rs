@@ -46,8 +46,12 @@ impl PageRaster {
         let size = normal.size(0);
         let mut pixels = normal.as_bytes(0).expect("raster has one frame").to_vec();
         darken_bgra(&mut pixels);
-        let buffer = RgbaImage::from_raw(size.width.0, size.height.0, pixels)
-            .expect("raster dimensions match pixels");
+        let buffer = RgbaImage::from_raw(
+            size.width.0.try_into().expect("positive raster width"),
+            size.height.0.try_into().expect("positive raster height"),
+            pixels,
+        )
+        .expect("raster dimensions match pixels");
         Self {
             normal,
             dark: Arc::new(RenderImage::new(vec![Frame::new(buffer)])),
@@ -250,7 +254,7 @@ impl PdfView {
             move |_, _, window, _| {
                 let viewer = viewer.clone();
                 // Capture before the built-in bubble listener has already moved y.
-                window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                window.on_mouse_event(move |event: &gpui::ScrollEvent, phase, window, cx| {
                     if phase == gpui::DispatchPhase::Capture && event.modifiers.shift {
                         let _ = viewer.update(cx, |this, cx| {
                             if this.scroll.bounds().contains(&event.position) {
@@ -269,7 +273,7 @@ impl PdfView {
 
     fn scroll_pages(
         &mut self,
-        event: &gpui::ScrollWheelEvent,
+        event: &gpui::ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
