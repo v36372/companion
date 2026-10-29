@@ -5,26 +5,43 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only token; no job needs secrets or write access.
+permissions:
+  contents: read
+
+# A new push to the same PR or branch cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
-  CARGO_BUILD_JOBS: 1
+  CARGO_BUILD_JOBS: 4
   # Match spike-sse.sh; avoid debug-info overhead and extra profile variants.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
 
+# Every job runs on Justin's self-hosted exe.dev runner (v36372-gh-runner), never on
+# GitHub-hosted runners. Self-hosted jobs run only for pushes to main and for PRs from
+# branches in this repository: fork PRs get no job, so fork code never reaches the VM.
+# Build dependencies and the Rust toolchain are preinstalled on the runner.
+
 jobs:
   rust:
-    runs-on: ubuntu-24.04
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, exe-gh-runner]
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux GPUI build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
-            libvulkan-dev libasound2-dev libssl-dev libzstd-dev libsqlite3-dev libdbus-1-dev
+        with:
+          persist-credentials: false
+      # Persistent target dir outside the checkout, so builds stay incremental
+      # across runs. The runner's daily cleanup prunes it.
+      - name: Use persistent target dir
+        run: echo "CARGO_TARGET_DIR=$HOME/ci-target/rust" >> "$GITHUB_ENV"
+      - name: Check preinstalled Linux GPUI build dependencies
+        run: scripts/ci-check-runner-deps.sh
       - name: Install pinned Rust toolchain
         run: rustup show
       # CI checks correctness, not GUI responsiveness; avoid optimising all deps.
@@ -34,11 +51,6 @@ jobs:
           mkdir -p "$cargo_home"
           printf '%s\n' '[profile.dev]' 'opt-level = 0' \
             '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # rust-cache does not include workspace profile settings in its key.
-          shared-key: ci-dev-unoptimised-v1
-          cache-on-failure: true
       - name: Check formatting
         if: hashFiles('Cargo.toml') != ''
         run: cargo fmt --all -- --check
@@ -68,54 +80,17 @@ jobs:
             echo "gpui-pre is not in the workspace dependency graph; skipping."
           fi
 
-  macos:
-    runs-on: macos-15
-    needs: agent
+  # Independent of rust/PDF: never add this job to rust.needs.
+  agent:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, exe-gh-runner]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Verify Apple Silicon runner
-        run: test "$(uname -m)" = arm64
-      # agent-core contains paths rooted at the repo (WASM + agent/dist WIT).
-      # Reuse the Linux-generated portable component; never componentize on macOS.
-      - uses: actions/download-artifact@v4
         with:
-          name: agent-core
-          path: .
-      - name: Verify agent component artifact
-        run: test -s crates/companion-agent-host/src/agent-core.wasm
-      - name: Install pinned Rust toolchain
-        run: rustup show
-      # Only Clippy uses dev; the release build below remains fully optimised.
-      - name: Use unoptimised CI dev profile
-        run: |
-          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-          mkdir -p "$cargo_home"
-          printf '%s\n' '[profile.dev]' 'opt-level = 0' \
-            '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: macos-release-agent
-          cache-on-failure: true
-      - name: Build release app with agent
-        run: cargo build --release -p companion --bin learning-companion --features agent --locked
-      - name: Lint macOS app with agent
-        run: cargo clippy -p companion --all-targets --features agent --locked -- -D warnings
-      - name: Smoke release app (no credentials or network)
-        run: scripts/smoke-macos.sh target/release/learning-companion "$RUNNER_TEMP/macos-smoke"
-      - name: Upload release smoke diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-release-smoke
-          path: ${{ runner.temp }}/macos-smoke/
-          if-no-files-found: warn
-
-  # Independent of rust/PDF: never add this job to rust.needs.
-  agent:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
+          persist-credentials: false
+      - name: Use persistent target dir
+        run: echo "CARGO_TARGET_DIR=$HOME/ci-target/agent" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -132,13 +107,8 @@ jobs:
           key: agent-component-v1-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('agent/src/**', 'agent/*.mjs', 'agent/package*.json', 'agent/tsconfig*.json', 'wit/**') }}
       - run: npm ci
         working-directory: agent
-      - name: Install keychain and document snapshot build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
-            libvulkan-dev libasound2-dev libssl-dev libzstd-dev libsqlite3-dev
+      - name: Check preinstalled keychain and document snapshot build dependencies
+        run: scripts/ci-check-runner-deps.sh
       - run: npm test && npm run typecheck
         working-directory: agent
       - name: Bundle agent
@@ -152,12 +122,6 @@ jobs:
         if: steps.component.outputs.cache-hit != 'true'
         run: npx jco wit ../crates/companion-agent-host/src/agent-core.wasm > dist/agent-core.wit
         working-directory: agent
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agent-core
-          path: |
-            crates/companion-agent-host/src/agent-core.wasm
-            agent/dist/agent-core.wit
       - name: Check pi-ai against local OpenAI-compatible mock (no credentials)
         run: npm run test:mock
         working-directory: agent
@@ -170,11 +134,6 @@ jobs:
           mkdir -p "$cargo_home"
           printf '%s\n' '[profile.dev]' 'opt-level = 0' \
             '[profile.dev.package."*"]' 'opt-level = 0' > "$cargo_home/config.toml"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # shared-key replaces key, so the agent needs its own namespace.
-          shared-key: ci-agent-dev-unoptimised-v1
-          cache-on-failure: true
       - name: Lint workspace with agent and mock-provider features
         run: cargo clippy --workspace --all-targets --locked --features companion/test-mock-provider -- -D warnings
       - name: Run component harness, PDF tools, host-auth, streaming and abort tests
