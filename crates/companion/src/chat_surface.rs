@@ -48,6 +48,11 @@ pub fn column(
         }
     });
     let status = crate::orb::agent_status(bridge, true, false);
+    let status_text = match status {
+        crate::orb::AgentStatus::Idle => "",
+        crate::orb::AgentStatus::Thinking | crate::orb::AgentStatus::Streaming => status.label(),
+        _ => crate::chat::status_label(bridge),
+    };
     let can_chat = bridge.can_chat();
     let checked = bridge.follow;
     let follow = Rc::new(follow);
@@ -55,7 +60,7 @@ pub fn column(
     div().flex().flex_col().h_full().w_full().min_w_0().bg(cx.theme().background).text_color(cx.theme().foreground)
         .child(div().flex().items_center().justify_between().px_3().py_2().gap_2().border_b_1().border_color(cx.theme().border)
             .child(div().flex().items_center().gap_2().child(crate::orb::core(status, 16., cx))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(if status == crate::orb::AgentStatus::Idle { "" } else { crate::chat::status_label(bridge) })))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(status_text)))
             .child(div().flex().items_center().gap_2()
                 .child(Popover::new("chat-options").trigger(Button::new("chat-options-trigger").ghost().small().label("⋯").tooltip("Conversation options"))
                     .content(move |_, _, cx| {

@@ -63,7 +63,7 @@ pub fn validate(source: &str) -> Option<f32> {
     if ["<!doctype", "<!entity"].iter().any(|s| lower.contains(s)) {
         return None;
     }
-    let document = roxmltree::Document::parse(source).ok()?;
+    let document = roxmltree::Document::parse(source.trim_start()).ok()?;
     let root = document.root_element();
     if root.tag_name().name() != "svg" {
         return None;
@@ -125,7 +125,7 @@ fn parse(node: &Node) -> Option<MarkdownNode> {
         source: code.value.clone(),
         image: Arc::new(Image::from_bytes(
             ImageFormat::Svg,
-            code.value.as_bytes().to_vec(),
+            code.value.trim_start().as_bytes().to_vec(),
         )),
         ratio,
     };
@@ -299,6 +299,10 @@ mod tests {
     use super::*;
     #[test]
     fn accepts_sizes_and_fences() {
+        assert_eq!(
+            validate("  <?xml version='1.0'?>\n<svg width='600' height='200'/>"),
+            Some(3.)
+        );
         assert_eq!(
             validate(
                 "<svg viewBox='0 0 720 360'><rect width='720' height='360' fill='white'/></svg>"

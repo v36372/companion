@@ -7,7 +7,6 @@ use gpui::{Entity, IntoElement, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
-    spinner::Spinner,
     text::TextView,
 };
 
@@ -217,18 +216,6 @@ pub fn pane(
                             )
                             .selectable(true),
                         ),
-                    )
-                })
-                .when(bridge.running, |pane| {
-                    pane.child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_center()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(Spinner::new().small())
-                            .child("Thinking…"),
                     )
                 }),
         )
