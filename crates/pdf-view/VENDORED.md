@@ -24,6 +24,9 @@
   area creation while preserving quote highlights and host navigation APIs
   (`src/toolbar.rs`, `src/find_bar.rs`).
 
+- Host edge sidebar peeks over the viewer without changing its layout/scroll;
+  pinning alone docks/resizes it (companion `edge_sidebar.rs`; no viewer changes).
+
 The manifest uses this repository's workspace dependencies and disables
 publishing. Examples are copied unchanged, except `dump_outline` (updated for the
 links API) and `forms_check` (removed with forms). The upstream Cargo.lock and
