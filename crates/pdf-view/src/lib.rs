@@ -1807,10 +1807,9 @@ impl Render for PdfView {
                 // The scroll container is now a flex column, so pages must NOT shrink to
                 // fit the viewport — keep their full height and let the column overflow.
                 .flex_shrink_0()
-                .ml(px(recolor::page_inset(
-                    f32::from(self.scroll.bounds().size.width),
-                    page_width,
-                )))
+                // Auto margins center fitting pages but resolve to zero for
+                // overflow, keeping the left edge reachable at high zoom.
+                .mx(gpui::auto())
                 .w(px(page_width))
                 .h(px(disp_h))
                 .rounded(px(2.0))
