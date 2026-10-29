@@ -59,7 +59,12 @@ pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
 /// PDF outline / table-of-contents + link extraction (always available — no deps).
 mod outline;
-pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
+pub use outline::{OutlineItem, outline};
+mod links;
+pub use links::{
+    LinkTarget, PageDestination, PdfLink, destination_on_page, is_safe_external_uri, page_links,
+};
+mod page_events;
 
 #[cfg(feature = "forms")]
 mod forms;
@@ -134,7 +139,7 @@ fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
     let doc = parse_with_password(bytes, password)?;
     let dims = page_dims(&doc);
     let toc = crate::outline::outline(&doc);
-    let links = crate::outline::page_links(&doc);
+    let links = page_links(&doc);
     Ok(Prepared {
         doc,
         dims,
@@ -504,6 +509,13 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// A user clicked a page annotation. Hosts resolve names and track navigation.
+    LinkClicked(LinkTarget),
+    /// Visible zero-based page / coarse in-page fraction, sampled at most every 150ms.
+    PageChanged {
+        page: usize,
+        scroll_frac: f32,
+    },
     /// The file couldn't be read or parsed (see [`PdfView::load_error`]) —
     /// terminal for this view; the viewer shows the message in place of the
     /// loading placeholder. Also fired when a retry-unlock fails with a
@@ -659,6 +671,7 @@ impl PdfView {
         quality: PdfQualityFn,
         cx: &mut Context<Self>,
     ) -> Self {
+        page_events::start(cx);
         let load_path = path.clone();
         cx.spawn(async move |this, cx| {
             // Read the file off-thread, keep the bytes (so an encrypted PDF can be
@@ -1503,6 +1516,26 @@ impl PdfView {
         cx.notify();
     }
 
+    /// The loaded, unlocked document, shared for off-thread destination resolution.
+    pub fn document(&self) -> Option<Arc<Document>> {
+        self.pdf.clone()
+    }
+
+    /// Jump to a normalized top-origin destination position.
+    pub fn go_to_destination(&mut self, destination: PageDestination, cx: &mut Context<Self>) {
+        self.go_to_page(destination.page, cx);
+        if let Some(y) = destination.y.filter(|y| y.is_finite())
+            && let Some(dims) = self.dims.get(destination.page)
+        {
+            let width = self.page_width();
+            let offset = page_top_y(&self.dims, width, destination.page)
+                + y.clamp(0.0, 1.0) * display_height(*dims, width);
+            self.scroll
+                .set_offset(point(self.scroll.offset().x, px(-offset)));
+            cx.notify();
+        }
+    }
+
     /// Toggle the table-of-contents (outline) panel.
     pub fn toggle_toc(&mut self, cx: &mut Context<Self>) {
         self.toc_open = !self.toc_open;
@@ -1580,7 +1613,7 @@ impl PdfView {
     }
 
     /// The topmost visible page index for the current scroll position.
-    fn current_page_index(&self) -> usize {
+    pub fn current_page_index(&self) -> usize {
         let scroll_y = f32::from(-self.scroll.offset().y);
         current_page(&self.dims, self.page_width(), scroll_y)
     }
@@ -1800,6 +1833,7 @@ impl Render for PdfView {
         // `display_height`. That sum drifts from gpui's pixel-snapped layout (~0.18px per
         // Letter page → ~2 text rows off by page 150 of a long PDF).
         let mut slots: Vec<gpui::AnyElement> = Vec::with_capacity(self.dims.len());
+        let center_pad = ((f32::from(self.scroll.bounds().size.width) - page_width) / 2.0).max(0.0);
         for (i, dim) in self.dims.iter().enumerate() {
             let disp_h = display_height(*dim, page_width);
             let slot = div()
@@ -1807,9 +1841,9 @@ impl Render for PdfView {
                 // The scroll container is now a flex column, so pages must NOT shrink to
                 // fit the viewport — keep their full height and let the column overflow.
                 .flex_shrink_0()
-                // Auto margins center fitting pages but resolve to zero for
-                // overflow, keeping the left edge reachable at high zoom.
-                .mx(gpui::auto())
+                // Center pages that fit; overflowing pages start at the left
+                // edge so the whole page stays reachable by horizontal scroll.
+                .ml(px(center_pad))
                 .w(px(page_width))
                 .h(px(disp_h))
                 .rounded(px(2.0))
@@ -1953,9 +1987,16 @@ impl Render for PdfView {
                             .rounded(px(2.0))
                             .cursor_pointer()
                             .hover(|h| h.bg(hsla(0.58, 0.9, 0.55, 0.12)))
-                            .on_click(cx.listener(move |this, _, _window, cx| match &target {
-                                LinkTarget::Page(p) => this.go_to_page(*p, cx),
-                                LinkTarget::Uri(u) => cx.open_url(u),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    window.focus(&this.focus, cx);
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .on_click(cx.listener(move |_this, _, _window, cx| {
+                                cx.stop_propagation();
+                                cx.emit(PdfEvent::LinkClicked(target.clone()));
                             })),
                     );
                 }
@@ -2267,6 +2308,10 @@ impl Render for PdfView {
                     #[cfg(feature = "markup")]
                     if this.selecting
                         && let Some((pg, n)) = this.point_to_page(_ev.position)
+                        && !this
+                            .links
+                            .get(pg)
+                            .is_some_and(|links| links.iter().any(|link| link.contains(n.x, n.y)))
                     {
                         this.sel_drag = Some((pg, n, n));
                         cx.notify();

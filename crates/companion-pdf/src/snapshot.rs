@@ -167,6 +167,30 @@ impl DocSnapshot {
     }
 
     pub fn record_navigation(&self, page_0: u32, scroll_frac: f32) {
+        self.record_position(page_0, scroll_frac, "explicit_nav");
+    }
+
+    /// Live scroll observations feed the same viewport used by Follow and PDF tools.
+    pub fn record_scroll_navigation(&self, page_0: u32, scroll_frac: f32) {
+        self.record_position(page_0, scroll_frac, "live_scroll");
+    }
+
+    #[cfg(test)]
+    fn fixture() -> Self {
+        Self::build(
+            Arc::new(include_bytes!("../tests/fixtures/mixed.pdf").to_vec()),
+            DocMeta {
+                id: "scroll-test".into(),
+                title: "Fixture".into(),
+                source_path: "mixed.pdf".into(),
+                sha256: "fixture".into(),
+                page_count: 0,
+            },
+        )
+        .unwrap()
+    }
+
+    fn record_position(&self, page_0: u32, scroll_frac: f32, source: &'static str) {
         let excerpt = self
             .pages
             .get(page_0 as usize)
@@ -178,13 +202,35 @@ impl DocSnapshot {
         *self.viewport.write().unwrap() = Viewport {
             page: page_0_to_1(page_0),
             page_count: self.meta.page_count,
-            scroll_frac,
+            scroll_frac: scroll_frac.clamp(0.0, 1.0),
             excerpt,
-            source: "explicit_nav",
+            source,
             updated_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_updates_follow_viewport_and_scanned_page() {
+        let snapshot = DocSnapshot::fixture();
+        snapshot.record_scroll_navigation(0, 0.35);
+        {
+            let viewport = snapshot.viewport.read().unwrap();
+            assert_eq!(viewport.page, 1);
+            assert_eq!(viewport.source, "live_scroll");
+            assert_eq!(viewport.scroll_frac, 0.35);
+            assert!(!viewport.excerpt.is_empty());
+        }
+        snapshot.record_scroll_navigation(1, 0.5);
+        let viewport = snapshot.viewport.read().unwrap();
+        assert_eq!(viewport.page, 2);
+        assert!(viewport.excerpt.is_empty());
     }
 }
