@@ -46,6 +46,7 @@ use image::{Frame, RgbaImage};
 #[cfg(feature = "markup")]
 use gpui::MouseMoveEvent;
 
+mod profile;
 mod recolor;
 #[cfg(feature = "markup")]
 mod selection;
@@ -1643,6 +1644,7 @@ impl EventEmitter<PdfEvent> for PdfView {}
 
 impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let profile_start = profile::enabled().then(std::time::Instant::now);
         // A sticky fit mode re-fits when the viewport size changes (window or
         // sidebar resize) — and computes the first real fit once layout exists.
         if self.fit.is_some() {
@@ -1680,6 +1682,8 @@ impl Render for PdfView {
         // Letter page → ~2 text rows off by page 150 of a long PDF).
         let mut slots: Vec<gpui::AnyElement> = Vec::with_capacity(self.dims.len());
         let center_pad = ((f32::from(self.scroll.bounds().size.width) - page_width) / 2.0).max(0.0);
+        let build_start = profile_start.map(|_| std::time::Instant::now());
+        let mut profile_links = 0;
         for (i, dim) in self.dims.iter().enumerate() {
             let disp_h = display_height(*dim, page_width);
             let slot = div()
@@ -1834,6 +1838,9 @@ impl Render for PdfView {
             // links. Coordinates are normalized to the page, like highlights.
             let mut slot = slot;
             if let Some(links) = self.links.get(i) {
+                if profile_start.is_some() {
+                    profile_links += links.len();
+                }
                 for (li, link) in links.iter().enumerate() {
                     let target = link.target.clone();
                     slot = slot.child(
@@ -1868,6 +1875,18 @@ impl Render for PdfView {
             }
             slots.push(slot.into_any_element());
         }
+
+        let build_ms = build_start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+        let profile_canvas = profile_start.zip(build_ms).map(|(start, build_ms)| {
+            gpui::canvas(
+                |_, _, _| (),
+                move |_, _, _, _| {
+                    profile::paint(start, build_ms, total, profile_links, total);
+                },
+            )
+            .absolute()
+            .size(px(0.0))
+        });
 
         let header = self.render_toolbar(name, current, total, window, cx);
 
@@ -2221,6 +2240,7 @@ impl Render for PdfView {
                             .children(scroll_top_btn),
                     ),
             )
+            .children(profile_canvas)
             .into_any_element()
     }
 }
