@@ -5,9 +5,32 @@ use gpui_component::{Root, Theme, ThemeMode};
 
 use crate::window::CompanionWindow;
 
+// Toolbar icons outside gpui-kit-assets' default component bundle.
+gpui_kit_assets::icon_assets!(ExtraIcons, [Highlighter, MousePointer, MoveHorizontal]);
+
+/// Component icons plus the few extra Lucide icons the viewer toolbar uses.
+struct AppAssets;
+
+impl gpui::AssetSource for AppAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(bytes) = ExtraIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
+        gpui_kit_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        let mut paths = gpui_kit_assets::Assets.list(path)?;
+        paths.extend(ExtraIcons.list(path)?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+}
+
 pub fn run(path: Option<PathBuf>) {
     gpui_platform::application()
-        .with_assets(gpui_kit_assets::Assets)
+        .with_assets(AppAssets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             // Component Theme is the shared design-token source for subsequent UI
