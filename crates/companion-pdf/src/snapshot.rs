@@ -1,6 +1,6 @@
 use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicUsize, Ordering},
+    Arc, OnceLock, RwLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use gpui_pdf::{Document, extract_page_text};
@@ -53,8 +53,23 @@ pub struct LiveSelection {
 }
 
 pub struct PageSlot {
-    pub text: Option<Arc<str>>,
     pub json: Arc<PageJson>,
+}
+
+/// Owner-side lifetime of a prefill. Dropping it stops workers between pages.
+#[derive(Default)]
+pub struct TextPrefill(Arc<AtomicBool>);
+
+impl TextPrefill {
+    pub fn cancellation(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
+}
+
+impl Drop for TextPrefill {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 pub struct DocSnapshot {
@@ -63,14 +78,13 @@ pub struct DocSnapshot {
     /// Prepared off-thread alongside the agent-facing Markdown.
     pub outline: Vec<gpui_pdf::OutlineItem>,
     pub hayro: Arc<Document>,
-    pub pages: Vec<PageSlot>,
+    pages: Vec<OnceLock<PageSlot>>,
     pub viewport: RwLock<Viewport>,
     pub selection: RwLock<Option<LiveSelection>>,
 }
 
 impl DocSnapshot {
-    /// Call on the background executor. At most four workers extract pages from
-    /// our parse, independently of PdfView's private parse (design D6).
+    /// Parse metadata and outline only; text is cached on demand.
     pub fn build(bytes: Arc<Vec<u8>>, meta: DocMeta) -> Result<Self, gpui_pdf::LoadError> {
         Self::build_with_password(bytes, meta, "")
     }
@@ -88,49 +102,7 @@ impl DocSnapshot {
             &meta.source_path,
             &meta.title,
         );
-        let next = AtomicUsize::new(0);
-        let slots = std::sync::Mutex::new((0..meta.page_count).map(|_| None).collect::<Vec<_>>());
-        std::thread::scope(|scope| {
-            for _ in 0..4.min(meta.page_count) {
-                let (doc, next, slots) = (&hayro, &next, &slots);
-                scope.spawn(move || {
-                    loop {
-                        let page_0 = next.fetch_add(1, Ordering::Relaxed);
-                        if page_0 >= doc.pages().len() {
-                            break;
-                        }
-                        let extracted =
-                            extract_page_text(doc, page_0).filter(|text| !text.is_empty());
-                        let text = extracted.as_ref().map(|text| text.text());
-                        // gpui-pdf exposes quote/line boxes, not individual glyphs.
-                        let boxes = extracted
-                            .as_ref()
-                            .map(|page| {
-                                page.locate(&page.text(), 0)
-                                    .into_iter()
-                                    .map(|rect| GlyphBox {
-                                        x: rect.x,
-                                        y: rect.y,
-                                        w: rect.w,
-                                        h: rect.h,
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        let json = Arc::new(PageJson {
-                            page: page_0_to_1(page_0 as u32),
-                            no_text_layer: text.is_none(),
-                            text: text.clone(),
-                            boxes,
-                        });
-                        slots.lock().unwrap()[page_0] = Some(PageSlot {
-                            text: text.map(Arc::from),
-                            json,
-                        });
-                    }
-                });
-            }
-        });
+        let pages = (0..meta.page_count).map(|_| OnceLock::new()).collect();
         let outline = crate::destinations::resolved_outline(&hayro);
         let outline_md = outline
             .iter()
@@ -155,15 +127,98 @@ impl DocSnapshot {
             outline_md,
             outline,
             hayro,
-            pages: slots
-                .into_inner()
-                .unwrap()
-                .into_iter()
-                .map(Option::unwrap)
-                .collect(),
+            pages,
             viewport,
             selection: RwLock::new(None),
         })
+    }
+
+    /// Blocking agent-side access. Concurrent requests extract each page once.
+    pub fn page(&self, page_0: usize) -> Option<&PageSlot> {
+        let slot = self.pages.get(page_0)?.get_or_init(|| {
+            let extracted = extract_page_text(&self.hayro, page_0).filter(|text| !text.is_empty());
+            let text = extracted.as_ref().map(|page| page.text());
+            let boxes = extracted
+                .as_ref()
+                .map(|page| {
+                    page.locate(text.as_deref().unwrap_or_default(), 0)
+                        .into_iter()
+                        .map(|rect| GlyphBox {
+                            x: rect.x,
+                            y: rect.y,
+                            w: rect.w,
+                            h: rect.h,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            PageSlot {
+                json: Arc::new(PageJson {
+                    page: page_0_to_1(page_0 as u32),
+                    no_text_layer: text.is_none(),
+                    text,
+                    boxes,
+                }),
+            }
+        });
+        let mut viewport = self.viewport.write().unwrap();
+        if viewport.page == page_0_to_1(page_0 as u32) {
+            viewport.excerpt = slot
+                .json
+                .text
+                .as_deref()
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect();
+        }
+        Some(slot)
+    }
+
+    /// UI-side access: never initiates or waits for extraction.
+    pub fn page_if_ready(&self, page_0: usize) -> Option<&PageSlot> {
+        self.pages.get(page_0)?.get()
+    }
+
+    /// Run off-thread after publication. The current page completes first, then
+    /// two workers fill outward. Cancellation bounds remaining work to two pages.
+    pub fn prefill(
+        &self,
+        current: usize,
+        cancelled: &AtomicBool,
+        ready: impl Fn(usize) + Sync,
+    ) -> bool {
+        let count = self.pages.len();
+        if count == 0 || cancelled.load(Ordering::Relaxed) {
+            return !cancelled.load(Ordering::Relaxed);
+        }
+        let current = current.min(count - 1);
+        self.page(current);
+        ready(current);
+        let order = prefill_order(count, current);
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..2.min(order.len()) {
+                let (order, next, ready) = (&order, &next, &ready);
+                scope.spawn(move || {
+                    while !cancelled.load(Ordering::Relaxed) {
+                        let Some(&page) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                            break;
+                        };
+                        self.page(page);
+                        ready(page);
+                    }
+                });
+            }
+        });
+        !cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Fixture hook: exclusive access only, never invalidates a published slot.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_page_for_test(&mut self, page_0: usize, slot: PageSlot) {
+        self.pages[page_0] = OnceLock::from(slot);
     }
 
     pub fn record_navigation(&self, page_0: u32, scroll_frac: f32) {
@@ -191,15 +246,17 @@ impl DocSnapshot {
     }
 
     fn record_position(&self, page_0: u32, scroll_frac: f32, source: &'static str) {
+        // Read readiness under the viewport lock so a concurrent fill cannot
+        // refresh the excerpt and then have it overwritten by an empty sample.
+        let mut viewport = self.viewport.write().unwrap();
         let excerpt = self
-            .pages
-            .get(page_0 as usize)
-            .and_then(|page| page.text.as_deref())
+            .page_if_ready(page_0 as usize)
+            .and_then(|page| page.json.text.as_deref())
             .unwrap_or_default()
             .chars()
             .take(500)
             .collect();
-        *self.viewport.write().unwrap() = Viewport {
+        *viewport = Viewport {
             page: page_0_to_1(page_0),
             page_count: self.meta.page_count,
             scroll_frac: scroll_frac.clamp(0.0, 1.0),
@@ -213,13 +270,73 @@ impl DocSnapshot {
     }
 }
 
+fn prefill_order(count: usize, current: usize) -> Vec<usize> {
+    (1..count)
+        .flat_map(|distance| {
+            [
+                current.checked_add(distance).filter(|&page| page < count),
+                current.checked_sub(distance),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn outward_order_covers_every_other_page_once() {
+        assert_eq!(prefill_order(7, 3), vec![4, 2, 5, 1, 6, 0]);
+        assert_eq!(prefill_order(4, 0), vec![1, 2, 3]);
+        assert_eq!(prefill_order(4, 3), vec![2, 1, 0]);
+        assert!(prefill_order(1, 0).is_empty());
+    }
+
+    #[test]
+    fn ui_read_does_not_wait_for_an_in_progress_slot() {
+        let snapshot = DocSnapshot::fixture();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let result = std::thread::scope(|scope| {
+            let snapshot = &snapshot;
+            scope.spawn(move || {
+                snapshot.pages[0].get_or_init(|| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    PageSlot {
+                        json: Arc::new(PageJson {
+                            page: 1,
+                            text: Some("ready".into()),
+                            no_text_layer: false,
+                            boxes: vec![],
+                        }),
+                    }
+                });
+            });
+            started_rx.recv().unwrap();
+            scope.spawn(move || ready_tx.send(snapshot.page_if_ready(0).is_none()).unwrap());
+            let result = ready_rx.recv_timeout(std::time::Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+            result
+        });
+        assert!(
+            result.unwrap(),
+            "UI read initiated or waited for extraction"
+        );
+        assert_eq!(
+            snapshot.page_if_ready(0).unwrap().json.text.as_deref(),
+            Some("ready")
+        );
+    }
+
+    #[test]
     fn scroll_updates_follow_viewport_and_scanned_page() {
         let snapshot = DocSnapshot::fixture();
+        snapshot.page(0);
         snapshot.record_scroll_navigation(0, 0.35);
         {
             let viewport = snapshot.viewport.read().unwrap();

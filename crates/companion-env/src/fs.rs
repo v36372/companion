@@ -234,11 +234,11 @@ impl VirtualDocFs {
                     .ok_or_else(|| error("not_found", path))?;
                 let page: usize = number.parse().map_err(|_| error("not_found", path))?;
                 let slot = doc
-                    .pages
-                    .get(page.wrapping_sub(1))
+                    .page(page.wrapping_sub(1))
                     .ok_or_else(|| error("not_found", path))?;
                 if ext == "txt" {
                     return slot
+                        .json
                         .text
                         .as_ref()
                         .map(|s| s.as_bytes().to_vec())

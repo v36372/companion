@@ -16,7 +16,7 @@ use crate::{
 use companion_pdf::{
     CompanionPdf,
     page_index::{page_0_to_1, page_1_to_0},
-    snapshot::{DocMeta, DocSnapshot, LiveSelection},
+    snapshot::{DocMeta, DocSnapshot, LiveSelection, TextPrefill},
     text_layer::live_selection,
 };
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
@@ -71,6 +71,7 @@ pub struct CompanionWindow {
     orb: Entity<crate::orb::Orb>,
     diagram_viewer: Entity<crate::diagram::DiagramViewer>,
     open_generation: u64,
+    text_prefill: Option<TextPrefill>,
     import: ImportState,
     pub(crate) doc_env: Option<Arc<companion_env::VirtualDocFs>>,
     pub(crate) pdf_commands: (
@@ -245,6 +246,7 @@ impl CompanionWindow {
             orb,
             diagram_viewer,
             open_generation: 0,
+            text_prefill: None,
             import: ImportState::default(),
             doc_env: None,
             pdf_commands: crossbeam_channel::unbounded(),
@@ -348,6 +350,8 @@ impl CompanionWindow {
     }
 
     fn release_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_generation += 1;
+        self.text_prefill = None;
         self.doc_env.take();
         self.password_open = false;
         self.password_focus_pending = false;
@@ -633,6 +637,8 @@ impl CompanionWindow {
             return;
         };
         self.open_generation += 1;
+        self.text_prefill = None;
+        let started = std::time::Instant::now();
         let generation = self.open_generation;
         let copied = document.stored_path.clone();
         let meta = DocMeta {
@@ -663,7 +669,7 @@ impl CompanionWindow {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
-                // Ignore extraction from a document since replaced.
+                // Ignore metadata from a document since replaced.
                 if generation != this.open_generation {
                     return;
                 }
@@ -688,7 +694,7 @@ impl CompanionWindow {
                             document.title = snapshot.meta.title.clone();
                         }
                         if let Some(pdf) = &mut this.pdf {
-                            pdf.snapshot = Some(snapshot);
+                            pdf.snapshot = Some(snapshot.clone());
                         }
                         if let Some((selection, _)) = &mut this.selection {
                             let text = this
@@ -696,11 +702,11 @@ impl CompanionWindow {
                                 .as_ref()
                                 .and_then(|pdf| pdf.snapshot.as_ref())
                                 .and_then(|snapshot| {
-                                    snapshot
-                                        .pages
-                                        .get(page_1_to_0(selection.page).unwrap() as usize)
+                                    snapshot.page_if_ready(
+                                            page_1_to_0(selection.page).unwrap() as usize
+                                        )
                                 })
-                                .and_then(|page| page.text.as_deref())
+                                .and_then(|page| page.json.text.as_deref())
                                 .unwrap_or_default();
                             *selection = live_selection(
                                 page_1_to_0(selection.page).unwrap(),
@@ -721,7 +727,7 @@ impl CompanionWindow {
                         } else if let Some(snapshot) =
                             this.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref())
                         {
-                            // Attaching extraction must not scroll or echo a DB write.
+                            // Publishing the snapshot must not scroll or echo a DB write.
                             let (page, fraction) =
                                 this.observed_position.unwrap_or((this.page_0, 0.0));
                             snapshot.record_scroll_navigation(page, fraction);
@@ -736,12 +742,56 @@ impl CompanionWindow {
                             });
                         }
                         this.refresh_recent();
+                        tracing::info!(
+                            target: "companion",
+                            "snapshot published in {} ms",
+                            started.elapsed().as_millis()
+                        );
+                        let prefill = TextPrefill::default();
+                        let cancelled = prefill.cancellation();
+                        this.text_prefill = Some(prefill);
+                        let (ready_tx, ready_rx) = async_channel::bounded(1);
+                        let task = cx.background_executor().spawn(async move {
+                            let started = std::time::Instant::now();
+                            let completed = snapshot.prefill(page_0 as usize, &cancelled, |page| {
+                                if snapshot.viewport.read().unwrap().page
+                                    == page_0_to_1(page as u32)
+                                {
+                                    let _ = ready_tx.try_send(());
+                                }
+                            });
+                            if completed {
+                                tracing::info!(
+                                    target: "companion",
+                                    "text prefill done in {} ms",
+                                    started.elapsed().as_millis()
+                                );
+                            } else {
+                                tracing::info!(
+                                    target: "companion",
+                                    "text prefill stopped (document replaced or closed)"
+                                );
+                            }
+                        });
+                        cx.spawn(async move |this, cx| {
+                            while ready_rx.recv().await.is_ok() {
+                                let _ = this.update(cx, |this, cx| {
+                                    if generation == this.open_generation {
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                            task.await;
+                        })
+                        .detach();
                     }
                     Ok(None) => {
                         this.password_open = true;
                         this.password_focus_pending = true;
                     }
-                    Err(error) => this.error = Some(format!("Cannot extract PDF text: {error:#}")),
+                    Err(error) => {
+                        this.error = Some(format!("Cannot prepare PDF snapshot: {error:#}"))
+                    }
                 }
                 cx.notify();
             });
@@ -840,8 +890,8 @@ impl CompanionWindow {
             .pdf
             .as_ref()
             .and_then(|pdf| pdf.snapshot.as_ref())
-            .and_then(|snapshot| snapshot.pages.get(page_0 as usize))
-            .and_then(|page| page.text.as_deref())
+            .and_then(|snapshot| snapshot.page_if_ready(page_0 as usize))
+            .and_then(|page| page.json.text.as_deref())
             .unwrap_or_default();
         self.selection = Some((live_selection(page_0, text, quote, occurrence), color));
         self.selection_bar_open = true;
@@ -1044,7 +1094,7 @@ impl Render for CompanionWindow {
         }
         let snapshot = self.pdf.as_ref().and_then(|pdf| pdf.snapshot.as_ref());
         let scanned = snapshot
-            .and_then(|snapshot| snapshot.pages.get(self.page_0 as usize))
+            .and_then(|snapshot| snapshot.page_if_ready(self.page_0 as usize))
             .is_some_and(|page| page.json.no_text_layer);
         let center = div()
             .relative()

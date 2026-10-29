@@ -16,4 +16,5 @@ uuid.workspace = true
 crossbeam-channel.workspace = true
 
 [dev-dependencies]
+companion-pdf = { path = "../companion-pdf", features = ["test-support"] }
 tempfile = "3"
