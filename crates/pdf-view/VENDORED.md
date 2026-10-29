@@ -26,6 +26,9 @@
 - Fit-width by default and cursor-anchored wheel/pinch zoom with deferred raster refresh.
 - Persistent text selection, selection-cleared events and window-space anchors
   for host selection actions (`src/selection.rs`, `src/lib.rs`).
+- Companion host: cursor-following agent orb, conditional wide chat surface and
+  safe inline SVG diagrams; closing chat restores the reader's available width
+  without changing the vendored PDF API.
 
 - Host edge sidebar peeks over the viewer without changing its layout/scroll;
   pinning alone docks/resizes it (companion `edge_sidebar.rs`; no viewer changes).

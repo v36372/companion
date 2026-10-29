@@ -3,8 +3,12 @@ mod agent_bridge;
 mod app;
 mod ask_bar;
 mod chat;
+mod chat_surface;
+mod diagram;
 mod model_picker;
+mod orb;
 mod selection_bar;
+mod theme;
 mod window;
 
 fn main() -> anyhow::Result<()> {

@@ -5,15 +5,9 @@ use crate::{
 };
 use gpui::{Entity, IntoElement, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
-    bubble::{Bubble, BubbleVariant},
+    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
-    message::MessageAlignment,
-    popover::Popover,
-    spinner::Spinner,
-    switch::Switch,
     text::TextView,
-    tooltip::Tooltip,
 };
 
 /// Follow a growing transcript only when the reader was already at its tail.
@@ -34,19 +28,30 @@ fn is_user(speaker: &str) -> bool {
     matches!(speaker, "You" | "user")
 }
 
-fn editable_failed_question(bridge: &Bridge) -> Option<String> {
+pub(crate) fn editable_failed_question(bridge: &Bridge) -> Option<String> {
     if bridge.running || bridge.parked_task.is_some() {
         return None;
     }
     let failed = matches!(bridge.availability, Availability::Failed(_))
-        || bridge.notices.iter().any(|notice| {
-            notice.starts_with("session_failed:") || notice.starts_with("task_faulted:")
-        })
+        || bridge
+            .notices
+            .iter()
+            .any(|notice| failure_detail(notice).is_some())
         || bridge
             .notices
             .last()
             .is_some_and(|notice| notice == &bridge.status);
     if !failed {
+        return None;
+    }
+    // Notices are durable across turns. A later completed assistant response
+    // means an old failure must not mark the current turn as failed forever.
+    if bridge
+        .transcript
+        .last()
+        .and_then(|turn| turn.text.split_once('\n'))
+        .is_some_and(|(speaker, _)| !is_user(speaker))
+    {
         return None;
     }
     bridge.transcript.iter().rev().find_map(|turn| {
@@ -55,7 +60,40 @@ fn editable_failed_question(bridge: &Bridge) -> Option<String> {
     })
 }
 
-fn status_label(bridge: &Bridge) -> &'static str {
+fn failure_detail(notice: &str) -> Option<&str> {
+    ["session_failed:", "task_faulted:", "submission_unanswered:"]
+        .into_iter()
+        .find_map(|prefix| notice.strip_prefix(prefix))
+        .map(str::trim)
+}
+
+fn visible_notice(bridge: &Bridge) -> Option<String> {
+    let notice = bridge.notices.last()?;
+    let Some(detail) = failure_detail(notice) else {
+        return Some(notice.clone());
+    };
+    editable_failed_question(bridge)?;
+    let detail = detail
+        .split_once(':')
+        .filter(|(status, _)| {
+            status
+                .parse::<u16>()
+                .is_ok_and(|code| (100..600).contains(&code))
+        })
+        .map_or(detail, |(_, body)| body.trim());
+    let message = serde_json::from_str::<serde_json::Value>(detail)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or(value["message"].as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| detail.to_owned());
+    Some(format!("Could not get an answer: {message}"))
+}
+
+pub(crate) fn status_label(bridge: &Bridge) -> &'static str {
     if bridge.status.starts_with("Not sent:") {
         return "Not sent — check agent status";
     }
@@ -77,13 +115,17 @@ fn status_label(bridge: &Bridge) -> &'static str {
 pub fn pane(
     bridge: &Bridge,
     composer: Entity<AskBar>,
+    viewer: Entity<crate::diagram::DiagramViewer>,
     scroll: &gpui::ScrollHandle,
     navigate: impl Fn(u32, &mut gpui::Window, &mut gpui::App) + Clone + 'static,
     retry: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
     cx: &mut gpui::App,
 ) -> impl IntoElement {
     follow_tail(scroll);
-    let unavailable = bridge.unavailable_reason();
+    let failed_question = editable_failed_question(bridge);
+    let unavailable = bridge
+        .unavailable_reason()
+        .map(|_| status_label(bridge).to_owned());
     div()
         .w_full()
         .min_w_0()
@@ -111,14 +153,11 @@ pub fn pane(
                                 .flex_col()
                                 .gap_3()
                                 .py_4()
-                                .child(div().text_lg().child("Let’s explore this PDF"))
                                 .child(
                                     div()
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            "Ask a question, or select a passage in the reader.",
-                                        ),
+                                        .child("Ask a question, or select a passage."),
                                 )
                                 .children(
                                     [
@@ -134,10 +173,7 @@ pub fn pane(
                                             .outline()
                                             .small()
                                             .label(prompt)
-                                            .disabled(!bridge.can_chat())
-                                            .tooltip(unavailable.clone().unwrap_or_else(|| {
-                                                "Edit this question before sending".into()
-                                            }))
+                                            .tooltip("Edit this question before sending")
                                             .on_click(move |_, window, cx| {
                                                 composer.update(cx, |bar, cx| {
                                                     bar.text = prompt.into();
@@ -157,22 +193,23 @@ pub fn pane(
                         .split_once('\n')
                         .unwrap_or(("assistant", &turn.text));
                     let user = is_user(speaker);
-                    Bubble::new()
-                        .alignment(if user {
-                            MessageAlignment::End
-                        } else {
-                            MessageAlignment::Start
-                        })
-                        .with_variant(if user {
-                            BubbleVariant::Filled
-                        } else {
-                            BubbleVariant::Secondary
-                        })
+                    div()
+                        .w_full()
+                        .flex()
+                        .when(user, |el| el.justify_end())
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .gap_2()
+                                .min_w_0()
+                                .when(user, |el| {
+                                    el.max_w(px(560.))
+                                        .p_3()
+                                        .rounded_lg()
+                                        .bg(cx.theme().secondary)
+                                })
+                                .when(!user, |el| el.w_full())
                                 .children(turn.quote.as_ref().map(|quote| {
                                     let page_0 = quote.page.saturating_sub(1);
                                     Button::new(("quote", index))
@@ -186,53 +223,41 @@ pub fn pane(
                                 .child(if user {
                                     div().child(content.to_owned()).into_any_element()
                                 } else {
-                                    TextView::markdown(
+                                    crate::diagram::markdown(
                                         ("assistant-message", index),
                                         content.to_owned(),
+                                        viewer.clone(),
                                     )
                                     .selectable(true)
                                     .into_any_element()
                                 }),
                         )
                 }))
-                .children(bridge.notices.iter().map(|text| {
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(text.clone())
-                }))
                 .when(!bridge.live.is_empty(), |pane| {
                     pane.child(
-                        Bubble::new()
-                            .alignment(MessageAlignment::Start)
-                            .with_variant(BubbleVariant::Secondary)
-                            .child(
-                                TextView::markdown("live-message", bridge.live.clone())
-                                    .selectable(true),
-                            ),
-                    )
-                })
-                .when(bridge.running, |pane| {
-                    pane.child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_center()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(Spinner::new().small())
-                            .child("Thinking…"),
+                        div().w_full().child(
+                            TextView::markdown(
+                                "live-message",
+                                crate::diagram::streaming_text(&bridge.live),
+                            )
+                            .selectable(true),
+                        ),
                     )
                 }),
         )
-        .when(bridge.queued() > 0, |pane| {
-            pane.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("{} follow-up(s) queued", bridge.queued())),
-            )
-        })
+        .children(visible_notice(bridge).map(|text| {
+            div()
+                .text_xs()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(if failed_question.is_some() {
+                    cx.theme().danger
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .child(text)
+        }))
         .children(bridge.parked_task.map(|_| {
             Button::new("retry-parked-task")
                 .outline()
@@ -247,7 +272,7 @@ pub fn pane(
                 }))
                 .on_click(move |_, window, cx| retry(window, cx))
         }))
-        .children(editable_failed_question(bridge).map(|question| {
+        .children(failed_question.map(|question| {
             let composer = composer.clone();
             Button::new("edit-failed-question")
                 .ghost()
@@ -263,72 +288,23 @@ pub fn pane(
                 })
         }))
         .child(composer)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn column(
-    bridge: &Bridge,
-    composer: Entity<AskBar>,
-    model_picker: Entity<crate::model_picker::ModelPicker>,
-    scroll: &gpui::ScrollHandle,
-    follow: impl Fn(&bool, &mut gpui::Window, &mut gpui::App) + 'static,
-    ask: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-    navigate: impl Fn(u32, &mut gpui::Window, &mut gpui::App) + Clone + 'static,
-    retry: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
-    cx: &mut gpui::App,
-) -> impl IntoElement {
-    composer.update(cx, |bar, cx| {
-        if bar.running != bridge.running {
-            bar.running = bridge.running;
-            cx.notify();
-        }
-    });
-    let can_chat = bridge.can_chat();
-    let reason = if bridge.status.starts_with("Not sent:") {
-        bridge.status.clone()
-    } else {
-        bridge
-            .unavailable_reason()
-            .unwrap_or_else(|| bridge.status.clone())
-    };
-    div().flex().flex_col().h_full().w_full().min_w_0().bg(cx.theme().background).text_color(cx.theme().foreground)
-        .child(div().flex().items_center().justify_between().px_3().pt_3().gap_2()
-            .child(div().font_semibold().child("Companion"))
-            .child(Popover::new("key-setup-popover")
-                .trigger(Button::new("key-setup").ghost().small().icon(IconName::Info).label("Set up key"))
-                .content(|_, window, cx| div().id("key-setup-content").w(px(420.)).max_w_full()
-                    .max_h(window.viewport_size().height - px(80.)).overflow_y_scroll()
-                    .flex().flex_col().gap_3().text_sm()
-                    .child(div().font_semibold().child("OpenRouter key setup"))
-                    .child("Restart after changes. Never paste keys in chat.")
-                    .child(TextView::markdown("key-setup-instructions", if cfg!(target_os = "macos") {
-                        "Launch with a host-only fallback (not an override of an existing keychain key):\n\n```sh\nCOMPANION_OPENROUTER_API_KEY='<your-key>' /path/to/learning-companion your.pdf\n```\n\nOr save in macOS Keychain:\n\n```sh\nsecurity add-generic-password -U -s learning-companion -a openrouter -w '<your-key>'\n```\n\nAllow/unlock Keychain access if prompted. Unsigned rebuilds may prompt again. Shell commands containing keys may remain in history."
-                    } else {
-                        "Launch with a host-only fallback (not an override of an existing keychain key):\n\n```sh\nCOMPANION_OPENROUTER_API_KEY='<your-key>' /path/to/learning-companion your.pdf\n```\n\nOr use an unlocked Linux Secret Service session:\n\n```sh\nsecret-tool store --label='Learning Companion OpenRouter' service learning-companion username openrouter target default\n```\n\nEnter the key at its prompt. Install `libsecret-tools` if `secret-tool` is missing. Shell commands containing keys may remain in history."
-                    }).selectable(true))
-                    .text_color(cx.theme().foreground))))
-        .child(div().id("agent-status").flex().items_center().gap_2().px_3().h(px(32.)).text_sm()
-            .text_color(if matches!(bridge.availability, Availability::KeyError(_) | Availability::Failed(_)) { cx.theme().danger } else { cx.theme().muted_foreground })
-            .tooltip(move |window, cx| Tooltip::new(reason.clone()).build(window, cx))
-            .child(if bridge.running || matches!(bridge.availability, Availability::Starting) {
-                Spinner::new().small().into_any_element()
-            } else { Icon::new(IconName::Info).small().into_any_element() })
-            .child(status_label(bridge)))
-        .child(model_picker)
-        .child(div().flex().items_center().justify_between().px_3().py_2().gap_2()
-            .child(Switch::new("follow-mode").label("Follow").checked(bridge.follow).disabled(!can_chat)
-                .tooltip(bridge.unavailable_reason().unwrap_or_else(|| "Include the last explicitly navigated page with your next question. Wheel scrolling does not update it.".into()))
-                .on_click(follow))
-            .child(Button::new("what-did-i-read").outline().small().label("What did I just read?").disabled(!can_chat)
-                .tooltip(bridge.unavailable_reason().unwrap_or_else(|| "Ask about the last explicitly navigated page".into()))
-                .on_click(ask)))
-        .child(div().flex_1().min_h_0().child(pane(bridge, composer, scroll, navigate, retry, cx)))
+        .when(bridge.queued() > 0, |pane| {
+            pane.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{} follow-up(s) queued", bridge.queued())),
+            )
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{editable_failed_question, is_near_tail, is_user, status_label};
-    use crate::agent_bridge::{Availability, Bridge, TranscriptTurn};
+    use super::{editable_failed_question, is_near_tail, is_user, status_label, visible_notice};
+    use crate::{
+        agent_bridge::{Availability, Bridge, Event, TranscriptTurn},
+        orb::{AgentStatus, agent_status},
+    };
 
     #[test]
     fn failed_turn_restores_draft_without_conflicting_with_parked_retry() {
@@ -348,6 +324,86 @@ mod tests {
         bridge.running = false;
         bridge.parked_task = Some(42);
         assert!(editable_failed_question(&bridge).is_none());
+    }
+
+    #[test]
+    fn successful_answer_clears_historical_failure_presentation() {
+        let mut bridge = Bridge::off();
+        bridge.notices.push("task_faulted: old error".into());
+        bridge.transcript.push(TranscriptTurn {
+            text: "You\nQuestion".into(),
+            quote: None,
+        });
+        assert!(editable_failed_question(&bridge).is_some());
+        bridge.transcript.push(TranscriptTurn {
+            text: "Agent\nAnswer".into(),
+            quote: None,
+        });
+        assert!(editable_failed_question(&bridge).is_none());
+    }
+
+    #[test]
+    fn provider_failure_is_actionable_after_an_earlier_answer_and_clears_on_success() {
+        for earlier_answer in [false, true] {
+            let mut bridge = Bridge::off();
+            bridge.availability = Availability::Ready;
+            bridge.conversation = Some(1);
+            if earlier_answer {
+                for text in ["You\nEarlier question", "Agent\nEarlier answer"] {
+                    bridge.transcript.push(TranscriptTurn {
+                        text: text.into(),
+                        quote: None,
+                    });
+                }
+            }
+            bridge.transcript.push(TranscriptTurn {
+                text: "You\nfail".into(),
+                quote: None,
+            });
+            bridge.event(Event::Report(serde_json::json!({
+                "type": "submission_unanswered", "message": "500: {\"message\":\"Mock provider failure\"}"
+            }).to_string()));
+            bridge.event(Event::Settled);
+            assert_eq!(editable_failed_question(&bridge).as_deref(), Some("fail"));
+            assert_eq!(
+                visible_notice(&bridge).as_deref(),
+                Some("Could not get an answer: Mock provider failure")
+            );
+            assert_eq!(agent_status(&bridge, false, true), AgentStatus::Error);
+            bridge.running = true;
+            assert!(editable_failed_question(&bridge).is_none());
+            assert!(visible_notice(&bridge).is_none());
+            bridge.running = false;
+            bridge.transcript.push(TranscriptTurn {
+                text: "Agent\nRecovered answer".into(),
+                quote: None,
+            });
+            assert!(editable_failed_question(&bridge).is_none());
+            assert!(visible_notice(&bridge).is_none());
+            assert_eq!(agent_status(&bridge, true, false), AgentStatus::Idle);
+        }
+    }
+
+    #[test]
+    fn failure_labels_hide_wire_prefix_and_provider_error_envelopes() {
+        let mut bridge = Bridge::off();
+        bridge.transcript.push(TranscriptTurn {
+            text: "You\nQuestion".into(),
+            quote: None,
+        });
+        for notice in [
+            "submission_unanswered: 500: {\"error\":{\"message\":\"Provider unavailable\"}}",
+            "session_failed: Provider unavailable",
+            "task_faulted: Provider unavailable",
+        ] {
+            bridge.notices = vec![notice.into()];
+            assert_eq!(
+                visible_notice(&bridge).as_deref(),
+                Some("Could not get an answer: Provider unavailable")
+            );
+        }
+        bridge.notices = vec!["A normal notice".into()];
+        assert_eq!(visible_notice(&bridge).as_deref(), Some("A normal notice"));
     }
 
     #[test]
