@@ -460,7 +460,60 @@ impl CompanionWindow {
         cx.subscribe(
             &pdf.view(),
             |this, viewer, event: &gpui_pdf::PdfEvent, cx| {
-                if let gpui_pdf::PdfEvent::PageChanged { page, scroll_frac } = event {
+                if let gpui_pdf::PdfEvent::LinkClicked(target) = event {
+                    let destination = match target {
+                        gpui_pdf::LinkTarget::Page(page) => Some(gpui_pdf::PageDestination {
+                            page: *page,
+                            y: None,
+                        }),
+                        gpui_pdf::LinkTarget::Destination(destination) => Some(*destination),
+                        gpui_pdf::LinkTarget::Uri(uri) => {
+                            if gpui_pdf::is_safe_external_uri(uri) {
+                                cx.open_url(uri);
+                            }
+                            None
+                        }
+                        gpui_pdf::LinkTarget::Named(name) => {
+                            if let Some(doc) = viewer.read(cx).document() {
+                                let name = name.clone();
+                                let source_doc = doc.clone();
+                                let viewer_id = viewer.entity_id();
+                                let task = cx.background_executor().spawn(async move {
+                                    companion_pdf::destinations::resolve_named(&doc, &name)
+                                });
+                                cx.spawn(async move |this, cx| {
+                                    let destination = task.await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        if this
+                                            .pdf
+                                            .as_ref()
+                                            .map(|pdf| pdf.view())
+                                            .filter(|current| current.entity_id() == viewer_id)
+                                            .and_then(|current| current.read(cx).document())
+                                            .is_some_and(|current| {
+                                                Arc::ptr_eq(&current, &source_doc)
+                                            })
+                                            && let Some(destination) = destination
+                                        {
+                                            this.goto_explicit(destination.page as u32, cx);
+                                            if let Some(pdf) = &this.pdf {
+                                                pdf.view().update(cx, |view, cx| {
+                                                    view.go_to_destination(destination, cx)
+                                                });
+                                            }
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }
+                            None
+                        }
+                    };
+                    if let Some(destination) = destination {
+                        this.goto_explicit(destination.page as u32, cx);
+                        viewer.update(cx, |view, cx| view.go_to_destination(destination, cx));
+                    }
+                } else if let gpui_pdf::PdfEvent::PageChanged { page, scroll_frac } = event {
                     let page_0 = *page as u32;
                     let changed =
                         observe_position(&mut this.observed_position, page_0, *scroll_frac);

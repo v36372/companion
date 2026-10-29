@@ -57,8 +57,12 @@ pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
 /// PDF outline / table-of-contents + link extraction (always available — no deps).
 mod outline;
+pub use outline::{OutlineItem, outline};
+mod links;
+pub use links::{
+    LinkTarget, PageDestination, PdfLink, destination_on_page, is_safe_external_uri, page_links,
+};
 mod page_events;
-pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 
 #[cfg(feature = "forms")]
 mod forms;
@@ -133,7 +137,7 @@ fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
     let doc = parse_with_password(bytes, password)?;
     let dims = page_dims(&doc);
     let toc = crate::outline::outline(&doc);
-    let links = crate::outline::page_links(&doc);
+    let links = page_links(&doc);
     Ok(Prepared {
         doc,
         dims,
@@ -500,6 +504,8 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// A user clicked a page annotation. Hosts resolve names and track navigation.
+    LinkClicked(LinkTarget),
     /// Visible zero-based page / coarse in-page fraction, sampled at most every 150ms.
     PageChanged {
         page: usize,
@@ -1499,6 +1505,26 @@ impl PdfView {
         cx.notify();
     }
 
+    /// The loaded, unlocked document, shared for off-thread destination resolution.
+    pub fn document(&self) -> Option<Arc<Document>> {
+        self.pdf.clone()
+    }
+
+    /// Jump to a normalized top-origin destination position.
+    pub fn go_to_destination(&mut self, destination: PageDestination, cx: &mut Context<Self>) {
+        self.go_to_page(destination.page, cx);
+        if let Some(y) = destination.y.filter(|y| y.is_finite())
+            && let Some(dims) = self.dims.get(destination.page)
+        {
+            let width = self.page_width();
+            let offset = page_top_y(&self.dims, width, destination.page)
+                + y.clamp(0.0, 1.0) * display_height(*dims, width);
+            self.scroll
+                .set_offset(point(self.scroll.offset().x, px(-offset)));
+            cx.notify();
+        }
+    }
+
     /// Toggle the table-of-contents (outline) panel.
     pub fn toggle_toc(&mut self, cx: &mut Context<Self>) {
         self.toc_open = !self.toc_open;
@@ -1938,9 +1964,16 @@ impl Render for PdfView {
                             .rounded(px(2.0))
                             .cursor_pointer()
                             .hover(|h| h.bg(hsla(0.58, 0.9, 0.55, 0.12)))
-                            .on_click(cx.listener(move |this, _, _window, cx| match &target {
-                                LinkTarget::Page(p) => this.go_to_page(*p, cx),
-                                LinkTarget::Uri(u) => cx.open_url(u),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    window.focus(&this.focus, cx);
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .on_click(cx.listener(move |_this, _, _window, cx| {
+                                cx.stop_propagation();
+                                cx.emit(PdfEvent::LinkClicked(target.clone()));
                             })),
                     );
                 }
@@ -2252,6 +2285,10 @@ impl Render for PdfView {
                     #[cfg(feature = "markup")]
                     if this.selecting
                         && let Some((pg, n)) = this.point_to_page(_ev.position)
+                        && !this
+                            .links
+                            .get(pg)
+                            .is_some_and(|links| links.iter().any(|link| link.contains(n.x, n.y)))
                     {
                         this.sel_drag = Some((pg, n, n));
                         cx.notify();
