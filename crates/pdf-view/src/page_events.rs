@@ -48,7 +48,10 @@ pub(super) fn start(cx: &mut Context<PdfView>) {
             cx.background_executor().timer(INTERVAL).await;
             if this
                 .update(cx, |view, cx| {
-                    if view.dims.is_empty() || f32::from(view.scroll.bounds().size.height) < 1.0 {
+                    if view.zoom_active
+                        || view.dims.is_empty()
+                        || f32::from(view.scroll.bounds().size.height) < 1.0
+                    {
                         return;
                     }
                     let position = position(
