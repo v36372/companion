@@ -350,6 +350,8 @@ impl CompanionWindow {
     }
 
     fn release_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_generation += 1;
+        self.text_prefill = None;
         self.doc_env.take();
         self.password_open = false;
         self.password_focus_pending = false;
@@ -741,6 +743,7 @@ impl CompanionWindow {
                         }
                         this.refresh_recent();
                         tracing::info!(
+                            target: "companion",
                             "snapshot published in {} ms",
                             started.elapsed().as_millis()
                         );
@@ -759,11 +762,13 @@ impl CompanionWindow {
                             });
                             if completed {
                                 tracing::info!(
+                                    target: "companion",
                                     "text prefill done in {} ms",
                                     started.elapsed().as_millis()
                                 );
                             } else {
                                 tracing::info!(
+                                    target: "companion",
                                     "text prefill stopped (document replaced or closed)"
                                 );
                             }
@@ -784,7 +789,9 @@ impl CompanionWindow {
                         this.password_open = true;
                         this.password_focus_pending = true;
                     }
-                    Err(error) => this.error = Some(format!("Cannot prepare PDF snapshot: {error:#}")),
+                    Err(error) => {
+                        this.error = Some(format!("Cannot prepare PDF snapshot: {error:#}"))
+                    }
                 }
                 cx.notify();
             });
