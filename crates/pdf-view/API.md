@@ -61,7 +61,8 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PdfView::toggle_select_mode`](#pdfviewtoggle_select_mode) | method | markup | `fn toggle_select_mode(&mut self, cx: &mut Context<Self>)` | Toggle drag-to-highlight mode |
 | [`PdfView::set_highlight_palette`](#pdfviewset_highlight_palette) | method | markup | `fn set_highlight_palette(&mut self, palette: Vec<(SharedString, Hsla)>, cx: &mut Context<Self>)` | Colors for the picker |
 | [`PdfView::reveal_highlight`](#pdfviewreveal_highlight) | method | markup | `fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>)` | Scroll to a page's highlight and flash it |
-| [`PdfView::toggle_search`](#pdfviewtoggle_search) | method | search | `fn toggle_search(&mut self, cx: &mut Context<Self>)` | Open/focus the find bar |
+| [`PdfView::toggle_search`](#pdfviewtoggle_search) | method | search | `fn toggle_search(&mut self, cx: &mut Context<Self>)` | Open/close the find bar |
+| `PdfView::focus_search` | method | search | `fn focus_search(&mut self, cx: &mut Context<Self>)` | Open/focus without toggling an already-open bar (Cmd/Ctrl-F) |
 | [`PdfView::close_search`](#pdfviewclose_search) | method | search | `fn close_search(&mut self, cx: &mut Context<Self>)` | Close the find bar, clear matches |
 | `PdfView::dismiss_input` | method | — | `fn dismiss_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool` | Consume Escape for palette/find/page input before host-global abort |
 | [`PdfView::next_match`](#pdfviewnext_match--prev_match) | method | search | `fn next_match(&mut self, cx: &mut Context<Self>)` | Focus the next match (wraps) |
@@ -888,7 +889,8 @@ page's highlights (brighter fill + outline for ~1.2 s) so the eye finds them.
 pub fn toggle_search(&mut self, cx: &mut Context<Self>)
 ```
 
-Open/focus the find-in-PDF bar (also bound to Cmd/Ctrl-F). Opening kicks off text extraction
+Toggle the find-in-PDF bar. `focus_search(cx)` opens/focuses it without toggling
+and is used for Cmd/Ctrl-F. Opening kicks off text extraction
 for **every page** of the document (off-thread, cached — subsequent opens are
 instant) and computes matches for the current query; the match list refreshes once
 the last page's text lands. Closing clears the matches. The query is typed

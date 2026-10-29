@@ -980,7 +980,7 @@ impl Render for CompanionWindow {
                         || event.keystroke.modifiers.platform =>
                     {
                         if let Some(pdf) = &this.pdf {
-                            pdf.toggle_search(cx);
+                            pdf.focus_search(cx);
                         }
                         cx.stop_propagation();
                     }

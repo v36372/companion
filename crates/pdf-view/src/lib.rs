@@ -947,10 +947,19 @@ impl PdfView {
 
     // ───────────────────────────── Find-in-PDF (search) ─────────────────────────────
 
-    /// Open/focus the find bar. Extract every page's text off-thread on first open.
-    /// Use [`Self::close_search`] to dismiss it. (`search` feature.)
+    /// Toggle the find bar, preserving the host-facing open/close API. (`search` feature.)
     #[cfg(feature = "search")]
     pub fn toggle_search(&mut self, cx: &mut Context<Self>) {
+        if self.search_open {
+            self.close_search(cx);
+        } else {
+            self.focus_search(cx);
+        }
+    }
+
+    /// Open/focus find without closing an already open bar (Cmd/Ctrl-F).
+    #[cfg(feature = "search")]
+    pub fn focus_search(&mut self, cx: &mut Context<Self>) {
         self.search_input_focus = true;
         #[cfg(feature = "markup")]
         {
@@ -1782,9 +1791,9 @@ impl Render for PdfView {
                 }
                 #[cfg(feature = "search")]
                 {
-                    // ⌘F toggles the find bar; ⌘G / ⌘⇧G step matches (bar open or not).
+                    // ⌘F focuses find; ⌘G / ⌘⇧G step matches (bar open or not).
                     if secondary && key == "f" {
-                        this.toggle_search(cx);
+                        this.focus_search(cx);
                         return;
                     }
                     if secondary && key == "g" {
