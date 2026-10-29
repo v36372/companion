@@ -17,6 +17,7 @@ pub(crate) struct EdgeSidebar {
     leave_since: Option<Duration>,
     edge: bool,
     panel: bool,
+    keyboard_focus: bool,
     pub(crate) width: f32,
 }
 
@@ -28,6 +29,7 @@ impl Default for EdgeSidebar {
             leave_since: None,
             edge: false,
             panel: false,
+            keyboard_focus: false,
             width: 280.,
         }
     }
@@ -64,6 +66,7 @@ impl EdgeSidebar {
         } else {
             Mode::Pinned
         };
+        self.keyboard_focus = false;
         self.edge_since = None;
         self.leave_since = None;
     }
@@ -72,6 +75,7 @@ impl EdgeSidebar {
         if self.mode == Mode::Peek {
             self.mode = Mode::Hidden;
         }
+        self.keyboard_focus = false;
         self.edge_since = None;
         self.leave_since = None;
     }
@@ -91,6 +95,16 @@ impl EdgeSidebar {
         }
     }
 
+    pub(crate) fn mouse_down(&mut self) {
+        self.keyboard_focus = false;
+    }
+
+    pub(crate) fn focus(&mut self, focused: bool, keyboard_input: bool) {
+        // Mouse-down also focuses track_focus containers in GPUI. Only keyboard
+        // focus protects Peek; keep that origin when the pointer merely moves.
+        self.keyboard_focus = focused && (self.keyboard_focus || keyboard_input);
+    }
+
     pub(crate) fn tick(&mut self, now: Duration, protected: bool) -> bool {
         let before = self.mode;
         if self.mode == Mode::Hidden
@@ -101,7 +115,7 @@ impl EdgeSidebar {
             self.mode = Mode::Peek;
         }
         if self.mode == Mode::Peek {
-            if protected {
+            if protected || self.keyboard_focus {
                 self.leave_since = None;
             } else if !self.edge && !self.panel {
                 let start = *self.leave_since.get_or_insert(now);
@@ -125,7 +139,7 @@ use gpui_component::{
 
 pub(super) struct Runtime {
     clock: std::time::Instant,
-    focus: FocusHandle,
+    pub(super) focus: FocusHandle,
     started: bool,
     held: bool,
     tooltips: Vec<gpui::AnyWeakView>,
@@ -138,8 +152,7 @@ impl CompanionWindow {
         if self.edge_sidebar.mode(self.document.is_some()) != Mode::Peek {
             return false;
         }
-        self.hide_sidebar(cx);
-        window.focus(&self.focus, cx);
+        self.hide_sidebar(window, cx);
         true
     }
 
@@ -158,7 +171,18 @@ impl CompanionWindow {
         })
     }
 
-    pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+    fn release_sidebar_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if window
+            .context_stack()
+            .iter()
+            .any(|context| context.contains("EdgeSidebar"))
+        {
+            window.focus(&self.focus, cx);
+        }
+    }
+
+    pub(super) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_sidebar_focus(window, cx);
         self.edge_sidebar.toggle_pin();
         if let Some(catalog) = &self.catalog
             && let Err(error) = catalog.set_sidebar_pinned(self.edge_sidebar.mode == Mode::Pinned)
@@ -194,7 +218,8 @@ impl CompanionWindow {
         self.edge_sidebar.mode(self.document.is_some()) == Mode::Pinned
     }
 
-    pub(super) fn hide_sidebar(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn hide_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_sidebar_focus(window, cx);
         self.edge_sidebar.hide();
         cx.notify();
     }
@@ -219,8 +244,8 @@ impl CompanionWindow {
                     .accessibility_label("Pin sidebar")
                     .toggled(self.sidebar_pinned())
                     .selected(self.sidebar_pinned())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.toggle_sidebar(cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_sidebar(window, cx);
                     })),
             )
     }
@@ -236,6 +261,21 @@ impl CompanionWindow {
             std::mem::replace(&mut runtime.started, true)
         });
         if !started {
+            let weak = cx.weak_entity();
+            window
+                .on_focus_in(&focus, cx, move |window, cx| {
+                    let _ = weak.update(cx, |this, _| {
+                        this.edge_sidebar
+                            .focus(true, window.last_input_was_keyboard());
+                    });
+                })
+                .detach();
+            let weak = cx.weak_entity();
+            window
+                .on_focus_out(&focus, cx, move |_, _, cx| {
+                    let _ = weak.update(cx, |this, _| this.edge_sidebar.focus(false, false));
+                })
+                .detach();
             let runtime = runtime.clone();
             cx.spawn_in(window, async move |this, cx| {
                 loop {
@@ -253,12 +293,16 @@ impl CompanionWindow {
                                     .retain(|tooltip| tooltip.upgrade().is_some())
                             });
                             let runtime = runtime.read(cx);
+                            if !runtime.focus.contains_focused(window, cx) {
+                                this.edge_sidebar.focus(false, false);
+                            }
                             if this.edge_sidebar.tick(
                                 runtime.clock.elapsed(),
-                                runtime.held
-                                    || !runtime.tooltips.is_empty()
-                                    || runtime.focus.contains_focused(window, cx),
+                                runtime.held || !runtime.tooltips.is_empty(),
                             ) {
+                                if this.edge_sidebar.mode(this.document.is_some()) == Mode::Hidden {
+                                    this.release_sidebar_focus(window, cx);
+                                }
                                 cx.notify();
                             }
                         })
@@ -322,7 +366,9 @@ impl CompanionWindow {
                     .w(px(self.edge_sidebar.width.clamp(220., 360.)))
                     .bg(cx.theme().sidebar)
                     .shadow_md()
-                    .track_focus(&focus)
+                    .capture_key_down(cx.listener(|this, _, _, _| {
+                        this.edge_sidebar.focus(true, true);
+                    }))
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         this.edge_sidebar.pointer(
                             false,
@@ -331,9 +377,10 @@ impl CompanionWindow {
                             hover.read(cx).clock.elapsed(),
                         );
                     }))
-                    .capture_any_mouse_down(move |_, _, cx| {
-                        down.update(cx, |runtime, _| runtime.held = true)
-                    })
+                    .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
+                        this.edge_sidebar.mouse_down();
+                        down.update(cx, |runtime, _| runtime.held = true);
+                    }))
                     .capture_any_mouse_up(move |_, _, cx| {
                         up.update(cx, |runtime, _| runtime.held = false)
                     })
@@ -411,6 +458,41 @@ mod tests {
         assert!(!state.tick(ms(1200), true));
         assert!(!state.tick(ms(1300), false));
         assert!(state.tick(ms(1650), false));
+    }
+
+    #[test]
+    fn click_inside_peek_then_leave_ignores_mouse_assigned_focus() {
+        let mut state = EdgeSidebar::default();
+        state.pointer(true, false, false, ms(0));
+        state.tick(ms(150), false);
+        state.pointer(false, true, false, ms(200));
+        state.mouse_down();
+        state.focus(true, false); // GPUI focuses the panel on mouse-down.
+        state.tick(ms(210), true); // Button held inside; never hide mid-drag.
+        state.tick(ms(220), false); // Mouse-up precedes outline navigation.
+        state.pointer(false, false, false, ms(250));
+        assert!(!state.tick(ms(599), false));
+        assert!(state.tick(ms(600), false));
+        assert_eq!(state.mode(true), Mode::Hidden);
+        state.toggle_pin();
+        assert_eq!(state.mode(true), Mode::Pinned);
+        state.toggle_pin();
+        assert_eq!(state.mode(true), Mode::Hidden);
+    }
+
+    #[test]
+    fn keyboard_focus_survives_pointer_motion_but_not_a_mouse_click() {
+        let mut state = EdgeSidebar::default();
+        state.pointer(true, false, false, ms(0));
+        state.tick(ms(150), false);
+        state.focus(true, true); // Tab into the sidebar.
+        state.pointer(false, false, false, ms(200));
+        state.focus(true, false); // Moving away does not surrender keyboard focus.
+        assert!(!state.tick(ms(1000), false));
+        state.mouse_down();
+        state.focus(true, false);
+        assert!(!state.tick(ms(1100), false));
+        assert!(state.tick(ms(1450), false));
     }
 
     #[test]

@@ -56,6 +56,7 @@ impl CompanionWindow {
             .unwrap_or_else(|| default_tab(!outline.is_empty()));
         let current = current_section(outline, self.page_0);
         let tooltip_state = choice.clone();
+        let sidebar_focus = choice.read(cx).focus.clone();
         let spacing = cx.theme().spacing_tokens();
         let typography = cx.theme().typography_tokens();
         let muted = cx.theme().muted_foreground;
@@ -241,7 +242,7 @@ impl CompanionWindow {
                                 ),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.hide_sidebar(cx);
+                            this.hide_sidebar(window, cx);
                             this.open_document(document.clone(), window, cx)
                         }))
                 }))
@@ -250,6 +251,8 @@ impl CompanionWindow {
 
         div()
             .id("sidebar")
+            .track_focus(&sidebar_focus)
+            .key_context("EdgeSidebar")
             .flex()
             .flex_col()
             .w_full()

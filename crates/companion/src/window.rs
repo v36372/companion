@@ -1090,7 +1090,7 @@ impl Render for CompanionWindow {
                             .iter()
                             .any(|context| context.contains("Input")) =>
                     {
-                        this.toggle_sidebar(cx);
+                        this.toggle_sidebar(window, cx);
                         cx.stop_propagation();
                     }
                     "pagedown" => {
