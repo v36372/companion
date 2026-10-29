@@ -3,7 +3,7 @@
 //! without lossy Unicode conversion, trimming, or PDF text-string decoding.
 use std::collections::{HashMap, HashSet};
 
-use gpui_pdf::{Document, OutlineItem};
+use gpui_pdf::{Document, OutlineItem, PageDestination};
 use hayro::hayro_syntax::object::{
     Array, Dict, MaybeRef, Object, ObjectIdentifier, String as PdfString,
 };
@@ -15,7 +15,7 @@ const MAX_KEY_BYTES: usize = 8 * 1024 * 1024;
 
 struct Destinations {
     pages: HashMap<ObjectIdentifier, usize>,
-    named: HashMap<Vec<u8>, usize>,
+    named: HashMap<Vec<u8>, PageDestination>,
     work_left: usize,
     key_bytes_left: usize,
 }
@@ -41,7 +41,7 @@ impl Destinations {
                     break;
                 }
                 if let Some(value) = dests.get::<Object>(&key) {
-                    this.insert(key.as_ref(), value);
+                    this.insert(doc, key.as_ref(), value);
                 }
             }
         }
@@ -62,13 +62,13 @@ impl Destinations {
         true
     }
 
-    fn insert(&mut self, key: &[u8], value: Object<'_>) {
+    fn insert(&mut self, doc: &Document, key: &[u8], value: Object<'_>) {
         if key.len() > self.key_bytes_left {
             return;
         }
-        if let Some(page) = self.explicit_page(value, 0) {
+        if let Some(destination) = self.explicit_destination(doc, value, 0) {
             self.key_bytes_left -= key.len();
-            self.named.insert(key.to_vec(), page);
+            self.named.insert(key.to_vec(), destination);
         }
     }
 
@@ -89,7 +89,7 @@ impl Destinations {
                     break;
                 };
                 if let Some(key) = key.into_string() {
-                    self.insert(key.as_bytes(), value);
+                    self.insert(doc, key.as_bytes(), value);
                 }
             }
         }
@@ -129,10 +129,31 @@ impl Destinations {
         }
     }
 
+    fn explicit_destination(
+        &self,
+        doc: &Document,
+        value: Object<'_>,
+        depth: usize,
+    ) -> Option<PageDestination> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        match value {
+            Object::Array(array) => {
+                let page = self.explicit_page(Object::Array(array.clone()), 0)?;
+                Some(gpui_pdf::destination_on_page(doc, &array, page))
+            }
+            Object::Dict(dict) => {
+                self.explicit_destination(doc, dict.get::<Object>("D")?, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
     fn page(&self, value: Object<'_>) -> Option<usize> {
         match value {
-            Object::String(key) => self.named.get(key.as_bytes()).copied(),
-            Object::Name(key) => self.named.get(key.as_ref()).copied(),
+            Object::String(key) => self.named.get(key.as_bytes()).map(|d| d.page),
+            Object::Name(key) => self.named.get(key.as_ref()).map(|d| d.page),
             other => self.explicit_page(other, 0),
         }
     }
@@ -151,6 +172,33 @@ impl Destinations {
             return None;
         }
         self.page(action.get::<Object>("D")?)
+    }
+}
+
+/// Resolve a link's exact byte-preserving named key. Call off the UI thread.
+/// Shares the outline resolver's depth, work, item and key-memory bounds.
+pub fn resolve_named(doc: &Document, name: &str) -> Option<PageDestination> {
+    NamedDestinations::new(doc)?.get(name)
+}
+
+/// A reusable, bounded index for bulk link resolution and diagnostics.
+pub struct NamedDestinations(Destinations);
+
+impl NamedDestinations {
+    pub fn new(doc: &Document) -> Option<Self> {
+        let catalog = doc.xref().get::<Dict>(doc.xref().root_id())?;
+        Some(Self(Destinations::new(doc, &catalog)))
+    }
+
+    pub fn get(&self, name: &str) -> Option<PageDestination> {
+        if name.len() > MAX_KEY_BYTES {
+            return None;
+        }
+        let key = name
+            .chars()
+            .map(|c| u8::try_from(c as u32).ok())
+            .collect::<Option<Vec<_>>>()?;
+        self.0.named.get(&key).copied()
     }
 }
 

@@ -144,6 +144,33 @@ fn name_tree_takes_precedence_over_legacy_dictionary() {
 }
 
 #[test]
+fn link_names_preserve_bytes_and_resolve_y() {
+    let doc = gpui_pdf::parse(fixture(
+        "/Dests << /chapter [4 0 R /XYZ 0 75 null] /#E9 [3 0 R /FitH 20] >>",
+        &[],
+    ))
+    .unwrap();
+    let index = companion_pdf::destinations::NamedDestinations::new(&doc).unwrap();
+    assert_eq!(
+        index.get("chapter"),
+        Some(gpui_pdf::PageDestination {
+            page: 1,
+            y: Some(0.25)
+        })
+    );
+    assert_eq!(
+        index.get("é"),
+        Some(gpui_pdf::PageDestination {
+            page: 0,
+            y: Some(0.8)
+        })
+    );
+    assert_eq!(index.get(" chapter "), None);
+    assert_eq!(index.get("missing"), None);
+    assert_eq!(index.get("❌"), None);
+}
+
+#[test]
 fn depth_limit_and_cyclic_destination_dictionary() {
     let mut objects = (13..=50)
         .map(|next| format!("<< /Kids [{next} 0 R] >>"))

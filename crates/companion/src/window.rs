@@ -445,7 +445,57 @@ impl CompanionWindow {
         cx.subscribe(
             &pdf.view(),
             |this, viewer, event: &gpui_pdf::PdfEvent, cx| {
-                if matches!(event, gpui_pdf::PdfEvent::LockChanged) {
+                if let gpui_pdf::PdfEvent::LinkClicked(target) = event {
+                    let destination = match target {
+                        gpui_pdf::LinkTarget::Page(page) => Some(gpui_pdf::PageDestination {
+                            page: *page,
+                            y: None,
+                        }),
+                        gpui_pdf::LinkTarget::Destination(destination) => Some(*destination),
+                        gpui_pdf::LinkTarget::Uri(uri) => {
+                            if gpui_pdf::is_safe_external_uri(uri) {
+                                cx.open_url(uri);
+                            }
+                            None
+                        }
+                        gpui_pdf::LinkTarget::Named(name) => {
+                            if let Some(snapshot) =
+                                this.pdf.as_ref().and_then(|pdf| pdf.snapshot.clone())
+                            {
+                                let name = name.clone();
+                                let doc = snapshot.hayro.clone();
+                                let task = cx.background_executor().spawn(async move {
+                                    companion_pdf::destinations::resolve_named(&doc, &name)
+                                });
+                                cx.spawn(async move |this, cx| {
+                                    let destination = task.await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        if this
+                                            .pdf
+                                            .as_ref()
+                                            .and_then(|pdf| pdf.snapshot.as_ref())
+                                            .is_some_and(|current| Arc::ptr_eq(current, &snapshot))
+                                            && let Some(destination) = destination
+                                        {
+                                            this.goto_explicit(destination.page as u32, cx);
+                                            if let Some(pdf) = &this.pdf {
+                                                pdf.view().update(cx, |view, cx| {
+                                                    view.go_to_destination(destination, cx)
+                                                });
+                                            }
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }
+                            None
+                        }
+                    };
+                    if let Some(destination) = destination {
+                        this.goto_explicit(destination.page as u32, cx);
+                        viewer.update(cx, |view, cx| view.go_to_destination(destination, cx));
+                    }
+                } else if matches!(event, gpui_pdf::PdfEvent::LockChanged) {
                     this.password_open = viewer.read(cx).is_locked();
                     this.password_focus_pending = this.password_open;
                     if this.password_open {
