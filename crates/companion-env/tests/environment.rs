@@ -33,6 +33,7 @@ fn viewport_and_follow_files_publish_host_state() {
     let (_dir, hub, doc) = setup();
     let doc = Arc::new(doc);
     let fs = VirtualDocFs::new(Some(doc.clone()), hub).unwrap();
+    doc.page(0);
     doc.record_navigation(0, 0.0);
     let viewport: serde_json::Value =
         serde_json::from_str(&fs.read_text_file("/doc/viewport.json").unwrap()).unwrap();
@@ -74,8 +75,14 @@ fn paths_never_escape_to_host() {
 #[test]
 fn scanned_empty_missing_and_readonly() {
     let (_dir, hub, mut doc) = setup();
-    doc.pages[0].text = Some(Arc::from(""));
-    Arc::make_mut(&mut doc.pages[0].json).text = Some("".into());
+    let mut json = (*doc.page(0).unwrap().json).clone();
+    json.text = Some("".into());
+    doc.set_page_for_test(
+        0,
+        companion_pdf::snapshot::PageSlot {
+            json: Arc::new(json),
+        },
+    );
     let fs = VirtualDocFs::new(Some(Arc::new(doc)), hub).unwrap();
     assert_eq!(fs.read_text_file("pages/0001.txt").unwrap(), "");
     let scan = fs.read_text_file("pages/0002.txt").unwrap_err();
@@ -211,4 +218,27 @@ fn commands_convert_once_and_highlight_replay_does_not_flash() {
     let hits: serde_json::Value =
         serde_json::from_str(&bus.search("Companion", 20).unwrap()).unwrap();
     assert_eq!(hits[0]["page"], 1);
+}
+
+#[test]
+fn agent_page_reads_are_lazy_and_keep_the_json_contract() {
+    let (_dir, hub, doc) = setup();
+    let doc = Arc::new(doc);
+    let fs = VirtualDocFs::new(Some(doc.clone()), hub).unwrap();
+    assert!(doc.page_if_ready(0).is_none());
+    assert!(doc.page_if_ready(1).is_none());
+    let text = fs.read_text_file("/doc/pages/0001.txt").unwrap();
+    assert!(text.contains("Companion"));
+    assert!(doc.page_if_ready(1).is_none());
+    let json: serde_json::Value =
+        serde_json::from_str(&fs.read_text_file("/doc/pages/0001.json").unwrap()).unwrap();
+    assert_eq!(json["text"], text);
+    assert_eq!(json["page"], 1);
+    assert_eq!(json["no_text_layer"], false);
+    assert!(json["boxes"].as_array().unwrap().iter().all(|rect| {
+        ["x", "y", "w", "h"]
+            .iter()
+            .all(|key| rect[*key].is_number())
+    }));
+    assert_eq!(json.as_object().unwrap().len(), 4);
 }

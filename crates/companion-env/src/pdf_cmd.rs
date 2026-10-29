@@ -92,8 +92,9 @@ impl PdfCommands {
         }
         let doc = self.fs.snapshot.as_ref().ok_or("no document")?;
         let mut hits = Vec::new();
-        for (page_0, slot) in doc.pages.iter().enumerate() {
-            if let Some(text) = &slot.text {
+        for page_0 in 0..doc.meta.page_count as usize {
+            let slot = doc.page(page_0).unwrap();
+            if let Some(text) = &slot.json.text {
                 for (occurrence, (offset, _)) in text.match_indices(query).enumerate() {
                     let excerpt: String = text[offset..].chars().take(300).collect();
                     hits.push(serde_json::json!({"page":page_0+1,"quote":query,"occurrence":occurrence,"excerpt":excerpt}));

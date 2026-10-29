@@ -25,16 +25,19 @@ fn snapshot_of_committed_text_fixture() {
     )
     .unwrap();
     assert_eq!(snapshot.meta.page_count, 1);
-    assert!(!snapshot.pages[0].json.no_text_layer);
+    assert!(!snapshot.page(0).unwrap().json.no_text_layer);
     assert!(
-        snapshot.pages[0]
+        snapshot
+            .page(0)
+            .unwrap()
+            .json
             .text
             .as_deref()
             .unwrap()
             .contains("Companion")
     );
-    assert_eq!(snapshot.pages[0].json.page, 1);
-    assert!(!snapshot.pages[0].json.boxes.is_empty());
+    assert_eq!(snapshot.page(0).unwrap().json.page, 1);
+    assert!(!snapshot.page(0).unwrap().json.boxes.is_empty());
     let page = gpui_pdf::extract_page_text(&snapshot.hayro, 0).unwrap();
     assert!(!locate_quote(&page, "Companion", 0).is_empty());
 }
@@ -47,10 +50,9 @@ fn image_only_page_is_not_empty_text() {
     )
     .unwrap();
     assert_eq!(snapshot.meta.page_count, 2);
-    assert!(!snapshot.pages[0].json.no_text_layer);
-    assert!(snapshot.pages[0].text.is_some());
-    let scanned = &snapshot.pages[1];
-    assert!(scanned.text.is_none());
+    assert!(!snapshot.page(0).unwrap().json.no_text_layer);
+    assert!(snapshot.page(0).unwrap().json.text.is_some());
+    let scanned = snapshot.page(1).unwrap();
     assert!(scanned.json.text.is_none());
     assert!(scanned.json.no_text_layer);
     assert_eq!(scanned.json.page, 2);
@@ -141,13 +143,16 @@ fn encrypted_snapshot_requires_password_and_keeps_outline_zero_based() {
     let snapshot = DocSnapshot::build_with_password(bytes, meta(), "companion").unwrap();
     assert_eq!(snapshot.meta.page_count, 2);
     assert!(
-        snapshot.pages[0]
+        snapshot
+            .page(0)
+            .unwrap()
+            .json
             .text
             .as_deref()
             .unwrap()
             .contains("Companion")
     );
-    assert!(snapshot.pages[1].json.no_text_layer);
+    assert!(snapshot.page(1).unwrap().json.no_text_layer);
     assert_eq!(
         snapshot
             .outline
@@ -162,4 +167,69 @@ fn encrypted_snapshot_requires_password_and_keeps_outline_zero_based() {
     // Rail navigation passes the unmodified 0-based target to the tracked path.
     snapshot.record_navigation(snapshot.outline[1].page.unwrap() as u32, 0.0);
     assert_eq!(snapshot.viewport.read().unwrap().page, 2);
+}
+
+#[test]
+fn lazy_cache_prefills_current_first_and_refreshes_without_navigation() {
+    let snapshot = DocSnapshot::build(
+        Arc::new(include_bytes!("fixtures/mixed.pdf").to_vec()),
+        meta(),
+    )
+    .unwrap();
+    assert!(snapshot.page_if_ready(0).is_none());
+    assert!(snapshot.page_if_ready(1).is_none());
+    snapshot.record_scroll_navigation(0, 0.4);
+    let before = snapshot.viewport.read().unwrap().clone();
+    assert!(before.excerpt.is_empty());
+    let order = std::sync::Mutex::new(Vec::new());
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    assert!(snapshot.prefill(0, &cancelled, |page| order.lock().unwrap().push(page)));
+    assert_eq!(*order.lock().unwrap(), vec![0, 1]);
+    assert!(snapshot.page_if_ready(0).is_some());
+    assert!(snapshot.page_if_ready(1).unwrap().json.no_text_layer);
+    let after = snapshot.viewport.read().unwrap().clone();
+    assert!(after.excerpt.contains("Companion"));
+    assert_eq!(after.page, before.page);
+    assert_eq!(after.source, before.source);
+    assert_eq!(after.scroll_frac, before.scroll_frac);
+    assert_eq!(after.updated_at_ms, before.updated_at_ms);
+    assert!(std::ptr::eq(
+        snapshot.page(0).unwrap(),
+        snapshot.page(0).unwrap()
+    ));
+    assert!(snapshot.page(2).is_none());
+    assert!(snapshot.page_if_ready(2).is_none());
+}
+
+#[test]
+fn dropping_prefill_owner_stops_before_the_next_page() {
+    use companion_pdf::snapshot::TextPrefill;
+    let snapshot = DocSnapshot::build(
+        Arc::new(include_bytes!("fixtures/mixed.pdf").to_vec()),
+        meta(),
+    )
+    .unwrap();
+    let owner = std::sync::Mutex::new(Some(TextPrefill::default()));
+    let cancelled = owner.lock().unwrap().as_ref().unwrap().cancellation();
+    assert!(!snapshot.prefill(1, &cancelled, |page| {
+        assert_eq!(page, 1); // restored page, not the document's first page
+        owner.lock().unwrap().take();
+    }));
+    assert!(snapshot.page_if_ready(1).unwrap().json.no_text_layer);
+    assert!(snapshot.page_if_ready(0).is_none());
+}
+
+#[test]
+fn already_cancelled_prefill_does_not_extract_any_page() {
+    let snapshot = DocSnapshot::build(
+        Arc::new(include_bytes!("fixtures/mixed.pdf").to_vec()),
+        meta(),
+    )
+    .unwrap();
+    let owner = companion_pdf::snapshot::TextPrefill::default();
+    let cancelled = owner.cancellation();
+    drop(owner);
+    assert!(!snapshot.prefill(0, &cancelled, |_| panic!("cancelled before start")));
+    assert!(snapshot.page_if_ready(0).is_none());
+    assert!(snapshot.page_if_ready(1).is_none());
 }
