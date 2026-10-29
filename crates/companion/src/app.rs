@@ -37,9 +37,9 @@ pub fn run(path: Option<PathBuf>) {
                             .detach();
                         let view = cx.new(|cx| CompanionWindow::new(path, window, cx));
                         companion = Some(view.clone());
-                        // Do not add component client-side borders to the existing
-                        // native window. Root's default font/rem match GPUI's own.
-                        cx.new(|cx| Root::new(view, window, cx).bordered(false))
+                        // Root 0.8.1 always includes its client-side border; there is
+                        // no bordered(false) opt-out. Its font/rem match GPUI's own.
+                        cx.new(|cx| Root::new(view, window, cx))
                     },
                 )
                 .expect("open Learning Companion window");

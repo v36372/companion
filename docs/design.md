@@ -68,7 +68,7 @@ Pain if we do nothing: the reader and the agent stay in different processes with
 - Cloud sync, iCloud, or a remote Durable Object.
 - A Bun sidecar as the **shipping** architecture (it **is** the written fallback if PR4 fails; production target remains WASM).
 - Rewriting the harness in Rust (`pi-durable-rs`, `rpi-tools`).
-- gpui-kit 0.8.x (requires `gpui-pre` 0.3.10, incompatible with `gpui-pdf` 0.6.1). Adopt `gpui-component`, `gpui-base`, `gpui-component-macros` and `gpui-kit-assets` at exact `=0.6.0` pins for `gpui-pre` 0.3.2 compatibility; widget migration is separate from the Root/Theme/assets foundation.
+- Broad widget migration beyond the Root/Theme/assets foundation. The component family now uses exact `=0.8.1` pins with `gpui-pre =0.3.10`; the vendored `gpui-pdf` 0.6.1 is ported to that snapshot.
 - Mobile, WASM-in-browser UI, or a web viewer.
 - wasmtime component-model-async (experimental; not a v1 plan).
 
@@ -230,7 +230,7 @@ Linux `wayland`/`x11` are **not** default on `gpui-pre-platform`. Without them `
 
 `gpui-pdf` 0.6.1’s published Cargo.toml is `gpui-pre ^0.3`; its **lockfile** pins `0.3.2`. Latest `gpui-pre` as of 2026-10-27 is **`0.3.10`**. **PR1 tries `=0.3.10` first**; fall back to **`=0.3.2`** if `gpui-pdf` 0.6.1 does not compile. Workspace pins **exact matching** `gpui-pre` + `gpui-pre-platform` and bumps them together. Do not mix 0.3.10 with 0.3.2.
 
-**Component foundation:** adopt `gpui-component =0.6.0` with `gpui-base`, `gpui-component-macros` and `gpui-kit-assets` all exactly `=0.6.0`. Exact pins prevent transitive 0.6.x drift and keep the `gpui-pre` 0.3.2 snapshot required by `gpui-pdf` 0.6.1. Initialize the library, wrap the existing view in `Root`, register icon assets and follow system appearance through `Theme`; its semantic tokens are the shared spacing, typography and colour source for later widget migrations. The existing hand-rolled views remain visually unchanged in this foundation step. `gpui-kit` 0.8.x stays out because it requires `gpui-pre` 0.3.10.
+**Component foundation:** use `gpui-component`, `gpui-base`, `gpui-component-macros` and `gpui-kit-assets` all exactly `=0.8.1`, with `gpui-pre` and `gpui-pre-platform` exactly `=0.3.10`. The vendored `gpui-pdf` 0.6.1 has the two API adaptations recorded in `crates/pdf-view/VENDORED.md`. Initialize the library, wrap the existing view in `Root`, register icon assets and follow system appearance through `Theme`; its semantic tokens are the shared spacing, typography and colour source for later widget migrations. The #19 foundation originally disabled Root's client-side border with `bordered(false)`. In 0.8.1 that opt-out no longer exists: use `Root::new(view, window, cx)` with its always-on border, and publish notifications through `WindowExt::push_notification`.
 
 **Forms feature:** off. Password PDFs: on (core `PdfView` API).
 
