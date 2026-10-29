@@ -52,6 +52,7 @@ mod recolor;
 mod selection;
 #[cfg(feature = "markup")]
 mod text;
+mod virtualize;
 mod zoom;
 pub use recolor::PageColors;
 #[cfg(feature = "markup")]
@@ -1193,7 +1194,13 @@ impl PdfView {
     #[cfg(feature = "markup")]
     fn point_to_page(&self, pos: gpui::Point<gpui::Pixels>) -> Option<(usize, NormPoint)> {
         let probe = f32::from(pos.y) - f32::from(self.scroll.offset().y);
-        for i in 0..self.dims.len() {
+        let range = keep_window(
+            &self.dims,
+            self.page_width(),
+            f32::from(-self.scroll.offset().y),
+            f32::from(self.scroll.bounds().size.height),
+        );
+        for i in virtualize::nearby_first(self.dims.len(), range.0..=range.1) {
             let Some(cb) = self.scroll.bounds_for_item(i) else {
                 continue;
             };
@@ -1515,7 +1522,12 @@ impl PdfView {
     /// Called every frame from `render` — cheap (a window calc + slot scan); it only
     /// spawns/evicts when something actually changed. This is what bounds an open
     /// PDF's memory to the on-screen pages instead of the whole document.
-    fn ensure_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn ensure_window(
+        &mut self,
+        range: (usize, usize),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Free atlas textures retired by an earlier re-render (we have a Window here).
         for arc in std::mem::take(&mut self.pending_drops) {
             cx.drop_image(arc, Some(window));
@@ -1533,9 +1545,7 @@ impl PdfView {
 
         let page_width = self.page_width();
         let scale_factor = window.scale_factor();
-        let scroll_y = f32::from(-self.scroll.offset().y);
-        let viewport_h = f32::from(self.scroll.bounds().size.height);
-        let (start, end) = keep_window(&self.dims, page_width, scroll_y, viewport_h);
+        let (start, end) = range;
         let generation = self.generation;
 
         // Extract the text layer (off-thread, cached) for visible pages that need it:
@@ -1655,7 +1665,13 @@ impl Render for PdfView {
             }
         }
         // Keep only the on-screen pages rasterized for the current scroll position.
-        self.ensure_window(window, cx);
+        let range = keep_window(
+            &self.dims,
+            self.page_width(),
+            f32::from(-self.scroll.offset().y),
+            f32::from(self.scroll.bounds().size.height),
+        );
+        self.ensure_window(range, window, cx);
         let style = (self.style)();
 
         if let Some(err) = &self.load_error {
@@ -1684,8 +1700,24 @@ impl Render for PdfView {
         let center_pad = ((f32::from(self.scroll.bounds().size.width) - page_width) / 2.0).max(0.0);
         let build_start = profile_start.map(|_| std::time::Instant::now());
         let mut profile_links = 0;
+        let (start, end) = range;
+        #[cfg(feature = "markup")]
+        let highlights = virtualize::group_window(&self.highlights, start..=end, |h| h.page);
+        #[cfg(all(feature = "markup", feature = "search"))]
+        let matches = virtualize::group_window(&self.matches, start..=end, |m| m.page);
         for (i, dim) in self.dims.iter().enumerate() {
             let disp_h = display_height(*dim, page_width);
+            if i < start || i > end {
+                slots.push(
+                    div()
+                        .flex_shrink_0()
+                        .ml(px(center_pad))
+                        .w(px(page_width))
+                        .h(px(disp_h))
+                        .into_any_element(),
+                );
+                continue;
+            }
             let slot = div()
                 .relative()
                 // The scroll container is now a flex column, so pages must NOT shrink to
@@ -1727,7 +1759,8 @@ impl Render for PdfView {
                 // Brighten + outline the page's highlights briefly after a jump from
                 // a note, so the clicked one is easy to spot.
                 let flashing = self.flash == Some(i);
-                for h in self.highlights.iter().filter(|h| h.page == i) {
+                for &hi in &highlights[i - start] {
+                    let h = &self.highlights[hi];
                     let fill = Hsla {
                         a: if flashing { 0.6 } else { 0.35 },
                         ..h.color
@@ -1810,10 +1843,8 @@ impl Render for PdfView {
                 }
                 // Find-in-PDF: box every match on this page; emphasize the focused one.
                 #[cfg(feature = "search")]
-                for (mi, m) in self.matches.iter().enumerate() {
-                    if m.page != i {
-                        continue;
-                    }
+                for &mi in &matches[i - start] {
+                    let m = &self.matches[mi];
                     let current = self.current_match == Some(mi);
                     let fill = hsla(0.09, 0.95, 0.5, if current { 0.55 } else { 0.3 });
                     for r in &m.rects {
@@ -1881,7 +1912,7 @@ impl Render for PdfView {
             gpui::canvas(
                 |_, _, _| (),
                 move |_, _, _, _| {
-                    profile::paint(start, build_ms, total, profile_links, total);
+                    profile::paint(start, build_ms, end - range.0 + 1, profile_links, total);
                 },
             )
             .absolute()
