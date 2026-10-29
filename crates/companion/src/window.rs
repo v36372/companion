@@ -22,7 +22,7 @@ use companion_pdf::{
 use companion_store::{SqliteHub, documents::Document, progress::ReadingProgress};
 use gpui::{Context, Entity, FocusHandle, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Root,
+    ActiveTheme, Disableable, IconName, WindowExt,
     button::{Button, ButtonVariants},
     notification::Notification,
     resizable::{h_resizable, resizable_panel},
@@ -813,9 +813,7 @@ impl Render for CompanionWindow {
             self.window_title = title;
         }
         if let Some(error) = self.error.take() {
-            Root::update(window, cx, |root, window, cx| {
-                root.push_notification(Notification::error(error).autohide(false), window, cx);
-            });
+            window.push_notification(Notification::error(error).autohide(false), cx);
         }
         if self.password_open && self.password_focus_pending {
             self.password_focus_pending = false;

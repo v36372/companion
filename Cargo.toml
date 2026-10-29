@@ -9,6 +9,10 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+# Rust 1.95 compatibility for three upstream macOS-only map_or_default calls.
+gpui-pre-macos = { path = "crates/patches/gpui-pre-macos" }
+
 # GPUI, hayro and Wasmtime are too slow unoptimised for an interactive GUI.
 [profile.dev]
 opt-level = 1
@@ -23,15 +27,14 @@ version = "0.1.0"
 publish = false
 
 [workspace.dependencies]
-gpui = { package = "gpui-pre", version = "=0.3.2" }  # gpui-pdf 0.6.1 uses the pre-0.3.10 Modifiers::secondary() API
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.2", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
+gpui = { package = "gpui-pre", version = "=0.3.10" }  # vendored pdf-view is ported to the 0.3.10 APIs
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 gpui-pdf = { path = "crates/pdf-view", features = ["search"] }
-# Keep all component crates exact: newer 0.6.x releases drift beyond the
-# gpui-pre 0.3.2 snapshot required by gpui-pdf 0.6.1.
-gpui-component = "=0.6.0"
-gpui-base = "=0.6.0"
-gpui-component-macros = "=0.6.0"
-gpui-kit-assets = "=0.6.0"
+# Keep the component family on exact, matching pins for gpui-pre 0.3.10.
+gpui-component = "=0.8.1"
+gpui-base = "=0.8.1"
+gpui-component-macros = "=0.8.1"
+gpui-kit-assets = "=0.8.1"
 hayro = "0.7"
 image = "0.25"
 rfd = "0.15"

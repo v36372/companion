@@ -356,7 +356,8 @@ These summarize implementation adjustments across PR0–PR11, not unfinished
 features from intermediate PRs:
 
 - Rust moved from the 1.85 floor to **1.95.0**; GPUI/platform are both pinned at
-  **0.3.2**, because gpui-pdf 0.6.1 is incompatible with 0.3.10's modifier API.
+  **0.3.10** with the component family at **0.8.1**. Vendored gpui-pdf 0.6.1
+  includes the modifier/scroll API adaptations recorded in its `VENDORED.md`.
 - The PDF is parsed separately for the viewer and our snapshot. Missing viewport
   and overlay hooks mean explicit-navigation tracking and an adjacent banner,
   rather than scroll-aware tracking or per-page overlays.
