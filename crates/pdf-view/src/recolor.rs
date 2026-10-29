@@ -120,6 +120,9 @@ impl PdfView {
     pub(crate) fn zoom_offset(&self, zoom: f32) -> gpui::Point<gpui::Pixels> {
         let viewport = self.scroll.bounds().size;
         let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+        if self.dims.is_empty() || vw <= 1.0 || vh <= 1.0 {
+            return self.scroll.offset();
+        }
         let old_width = self.page_width();
         let new_width = crate::PAGE_WIDTH * zoom;
         let ratio = new_width / old_width;
@@ -248,6 +251,8 @@ impl PdfView {
             },
         )
         .absolute()
+        .top_0()
+        .left_0()
         .size_full()
     }
 
