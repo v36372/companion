@@ -849,6 +849,11 @@ impl Render for CompanionWindow {
             let theme = cx.theme();
             pdf.set_style(
                 gpui_pdf::PdfStyle {
+                    page_colors: if theme.is_dark() {
+                        gpui_pdf::PageColors::Dark
+                    } else {
+                        gpui_pdf::PageColors::Normal
+                    },
                     bg: theme.muted,
                     border: theme.border,
                     placeholder_bg: theme.secondary,

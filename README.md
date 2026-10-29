@@ -221,6 +221,18 @@ session-local `/tmp`, a read tool and seven `pdf_*` tools. There is no general
 shell/CodingTools access. See [chat](docs/chat.md), [reader UX](docs/reader-ux.md)
 and [virtual document filesystem](docs/virtual-doc-fs.md) for details.
 
+### Appearance and zoomed pages
+
+Launch with `COMPANION_THEME=dark` to use dark chrome and dark PDF pages even
+on a light desktop, or `COMPANION_THEME=light` for original page colours.
+Dark pages invert lightness while preserving hue (photographs retain their hue,
+but their tones invert). Theme changes select cached pixels without reloading
+the document. Highlights and search emphasis remain coloured overlays.
+
+At high zoom, pan horizontally with **Shift + wheel**, a trackpad's horizontal
+scroll gesture, or the draggable scrollbar along the viewer's bottom edge.
+The right-edge scrollbar continues to navigate vertically.
+
 ## Data and configuration
 
 PDFs are copied to **`docs/<uuid>.pdf`** under the app data directory before
@@ -239,6 +251,7 @@ on Linux, `$XDG_DATA_HOME/learning-companion` or
 | --- | --- |
 | `COMPANION_AGENT` | `wasm` (default) or `off`; other values are errors. WASM still requires the `agent` feature. |
 | `COMPANION_DATA_DIR` | Override the data root, useful for isolated/headless runs. |
+| `COMPANION_THEME` | `dark`, `light`, or `system` (default). Forces the whole window and PDF page palette; `system` follows live OS appearance changes. Invalid values warn and use `system`. |
 | `COMPANION_CACHE_DIR` | Override the OS app cache root (separate from data). Compiled agent artifacts live in `components/`. |
 | `COMPANION_COMPONENT_CACHE` | `off` disables persistent component caching; otherwise enabled on Unix. |
 | `COMPANION_OPENROUTER_API_KEY` | Host keychain fallback for OpenRouter. |

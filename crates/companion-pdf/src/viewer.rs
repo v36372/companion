@@ -47,10 +47,12 @@ impl CompanionPdf {
         }
     }
 
-    /// Theme changes update chrome only, never page width, zoom or raster quality.
+    /// Theme changes update chrome and select cached page pixels; never reload
+    /// the document or change page width, zoom or raster quality.
     pub fn set_style(&self, style: PdfStyle, cx: &mut App) {
         let previous = self.style.replace(style);
-        if previous.bg != style.bg
+        if previous.page_colors != style.page_colors
+            || previous.bg != style.bg
             || previous.border != style.border
             || previous.placeholder_bg != style.placeholder_bg
             || previous.placeholder_fg != style.placeholder_fg
