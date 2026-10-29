@@ -977,7 +977,10 @@ impl Render for CompanionWindow {
             self.password_bar
                 .update(cx, |bar, cx| bar.focus(window, cx));
         }
-        let disabled_reason = self.bridge.unavailable_reason();
+        let disabled_reason = self
+            .bridge
+            .unavailable_reason()
+            .map(|_| crate::chat::status_label(&self.bridge).to_owned());
         let status = crate::orb::agent_status(&self.bridge, self.surface_open, self.unread);
         self.orb.update(cx, |orb, cx| {
             let label = crate::orb::tooltip_label(&self.bridge, status).to_owned();

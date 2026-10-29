@@ -88,7 +88,9 @@ pub fn pane(
     cx: &mut gpui::App,
 ) -> impl IntoElement {
     follow_tail(scroll);
-    let unavailable = bridge.unavailable_reason();
+    let unavailable = bridge
+        .unavailable_reason()
+        .map(|_| status_label(bridge).to_owned());
     div()
         .w_full()
         .min_w_0()
@@ -136,9 +138,7 @@ pub fn pane(
                                             .outline()
                                             .small()
                                             .label(prompt)
-                                            .tooltip(unavailable.clone().unwrap_or_else(|| {
-                                                "Edit this question before sending".into()
-                                            }))
+                                            .tooltip("Edit this question before sending")
                                             .on_click(move |_, window, cx| {
                                                 composer.update(cx, |bar, cx| {
                                                     bar.text = prompt.into();
