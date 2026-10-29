@@ -1498,7 +1498,12 @@ impl PdfView {
         cx.notify();
     }
 
-    /// Jump to a normalized top-origin destination position, preserving horizontal scroll.
+    /// The loaded, unlocked document, shared for off-thread destination resolution.
+    pub fn document(&self) -> Option<Arc<Document>> {
+        self.pdf.clone()
+    }
+
+    /// Jump to a normalized top-origin destination position.
     pub fn go_to_destination(&mut self, destination: PageDestination, cx: &mut Context<Self>) {
         self.go_to_page(destination.page, cx);
         if let Some(y) = destination.y.filter(|y| y.is_finite())

@@ -459,11 +459,10 @@ impl CompanionWindow {
                             None
                         }
                         gpui_pdf::LinkTarget::Named(name) => {
-                            if let Some(snapshot) =
-                                this.pdf.as_ref().and_then(|pdf| pdf.snapshot.clone())
-                            {
+                            if let Some(doc) = viewer.read(cx).document() {
                                 let name = name.clone();
-                                let doc = snapshot.hayro.clone();
+                                let source_doc = doc.clone();
+                                let viewer_id = viewer.entity_id();
                                 let task = cx.background_executor().spawn(async move {
                                     companion_pdf::destinations::resolve_named(&doc, &name)
                                 });
@@ -473,8 +472,12 @@ impl CompanionWindow {
                                         if this
                                             .pdf
                                             .as_ref()
-                                            .and_then(|pdf| pdf.snapshot.as_ref())
-                                            .is_some_and(|current| Arc::ptr_eq(current, &snapshot))
+                                            .map(|pdf| pdf.view())
+                                            .filter(|current| current.entity_id() == viewer_id)
+                                            .and_then(|current| current.read(cx).document())
+                                            .is_some_and(|current| {
+                                                Arc::ptr_eq(&current, &source_doc)
+                                            })
                                             && let Some(destination) = destination
                                         {
                                             this.goto_explicit(destination.page as u32, cx);
