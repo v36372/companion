@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
-use gpui_component::{Root, Theme};
+use gpui_component::{Root, Theme, ThemeMode};
 
 use crate::window::CompanionWindow;
 
@@ -29,12 +29,18 @@ pub fn run(path: Option<PathBuf>) {
                         ..Default::default()
                     },
                     |window, cx| {
-                        Theme::sync_system_appearance(Some(window), cx);
-                        window
-                            .observe_window_appearance(|window, cx| {
-                                Theme::sync_system_appearance(Some(window), cx);
-                            })
-                            .detach();
+                        let theme_override =
+                            theme_override(std::env::var("COMPANION_THEME").ok().as_deref());
+                        if let Some(mode) = theme_override {
+                            Theme::change(mode, Some(window), cx);
+                        } else {
+                            Theme::sync_system_appearance(Some(window), cx);
+                            window
+                                .observe_window_appearance(|window, cx| {
+                                    Theme::sync_system_appearance(Some(window), cx);
+                                })
+                                .detach();
+                        }
                         let view = cx.new(|cx| CompanionWindow::new(path, window, cx));
                         companion = Some(view.clone());
                         // Root 0.8.1 always includes its client-side border; there is
@@ -65,4 +71,30 @@ pub fn run(path: Option<PathBuf>) {
             cx.activate(true);
             tracing::info!(target: "companion", "Learning Companion window opened");
         });
+}
+
+fn theme_override(value: Option<&str>) -> Option<ThemeMode> {
+    match value {
+        Some("dark") => Some(ThemeMode::Dark),
+        Some("light") => Some(ThemeMode::Light),
+        None | Some("system") => None,
+        Some(other) => {
+            tracing::warn!(target: "companion", value = other, "invalid COMPANION_THEME; using system appearance");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_environment_override() {
+        assert_eq!(theme_override(Some("dark")), Some(ThemeMode::Dark));
+        assert_eq!(theme_override(Some("light")), Some(ThemeMode::Light));
+        assert_eq!(theme_override(Some("system")), None);
+        assert_eq!(theme_override(None), None);
+        assert_eq!(theme_override(Some("invalid")), None);
+    }
 }

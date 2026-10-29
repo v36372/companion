@@ -18,4 +18,5 @@ The examples are copied unchanged. The manifest uses this repository's workspace
 dependencies and disables publishing. The upstream
 Cargo.lock and rust-toolchain.toml are not included.
 
+- Cached hue-preserving dark page palette and two-axis page scrolling with a draggable horizontal scrollbar.
 - In-page links: bounded off-thread annotation parsing, named/explicit/GoTo/URI targets, cropped/rotated hit rectangles, selection-safe click events, and destination y-offset navigation.
