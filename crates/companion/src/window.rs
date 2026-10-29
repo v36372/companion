@@ -31,6 +31,9 @@ use gpui_component::{
 #[path = "sidebar.rs"]
 mod sidebar;
 
+#[path = "edge_sidebar.rs"]
+mod edge_sidebar;
+
 /// Restores seed `last`; observing that same viewport must not schedule a write.
 fn observe_position(last: &mut Option<(u32, f32)>, page: u32, fraction: f32) -> bool {
     let next = Some((page, fraction));
@@ -41,6 +44,7 @@ fn observe_position(last: &mut Option<(u32, f32)>, page: u32, fraction: f32) -> 
 
 pub struct CompanionWindow {
     pdf: Option<CompanionPdf>,
+    edge_sidebar: edge_sidebar::EdgeSidebar,
     focus: FocusHandle,
     window_title: String,
     dialog_open: bool,
@@ -214,6 +218,7 @@ impl CompanionWindow {
         let bridge = Bridge::off();
         let mut view = Self {
             pdf: None,
+            edge_sidebar: edge_sidebar::EdgeSidebar::load(catalog.as_deref()),
             model_picker,
             focus,
             window_title: String::new(),
@@ -1191,6 +1196,85 @@ impl Render for CompanionWindow {
                 }),
         );
 
+        let panes = if !self.sidebar_pinned() && !self.surface_open {
+            center.into_any_element()
+        } else {
+            h_resizable(match (self.sidebar_pinned(), self.surface_open) {
+                (true, true) => "reader-panes-pinned-chat",
+                (true, false) => "reader-panes-pinned",
+                (false, true) => "reader-panes-chat",
+                (false, false) => unreachable!(),
+            })
+            .on_resize(cx.listener(Self::sidebar_resized))
+            .when(self.sidebar_pinned(), |group| {
+                group.child(
+                    resizable_panel()
+                        .size(px(self.edge_sidebar.width))
+                        .size_range(px(220.)..px(360.))
+                        .fixed()
+                        .child(self.render_sidebar(window, cx)),
+                )
+            })
+            .child(
+                resizable_panel()
+                    .size_range(px(280.)..gpui::Pixels::MAX)
+                    .child(center),
+            )
+            .when(self.surface_open, |panes| {
+                panes.child(
+                    resizable_panel()
+                        .size(window.viewport_size().width * 0.45)
+                        .size_range(
+                            px(420.)..(window.viewport_size().width - px(360.)).max(px(420.)),
+                        )
+                        .flex_none()
+                        .child(
+                            div()
+                                .relative()
+                                .size_full()
+                                .track_focus(&self.chat_focus)
+                                .child(crate::chat_surface::column(
+                                    &self.bridge,
+                                    self.composer.clone(),
+                                    self.model_picker.clone(),
+                                    self.diagram_viewer.clone(),
+                                    &self.chat_scroll,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.bridge.toggle_follow();
+                                        cx.notify();
+                                    }),
+                                    cx.listener(|this, _, _, cx| {
+                                        this.bridge.submit("What did I just read?".into(), None);
+                                        cx.notify();
+                                    }),
+                                    navigate_quote,
+                                    retry,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.toggle_surface(window, cx)
+                                    }),
+                                    cx,
+                                ))
+                                .child({
+                                    let orb = self.orb.clone();
+                                    gpui::canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, _, cx| {
+                                            orb.update(cx, |orb, cx| {
+                                                if orb.surface_bounds != bounds {
+                                                    orb.surface_bounds = bounds;
+                                                    cx.notify();
+                                                }
+                                            });
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0()
+                                }),
+                        ),
+                )
+            })
+            .into_any_element()
+        };
         div()
             .relative()
             .track_focus(&self.focus)
@@ -1210,6 +1294,15 @@ impl Render for CompanionWindow {
                         this.toggle_surface(window, cx);
                         cx.stop_propagation();
                     }
+                    "b" if event.keystroke.modifiers.secondary(cx)
+                        && !window
+                            .context_stack()
+                            .iter()
+                            .any(|context| context.contains("Input")) =>
+                    {
+                        this.toggle_sidebar(window, cx);
+                        cx.stop_propagation();
+                    }
                     "pagedown" => {
                         this.navigate(true, cx);
                         cx.stop_propagation();
@@ -1219,8 +1312,11 @@ impl Render for CompanionWindow {
                         cx.stop_propagation();
                     }
                     "escape" => {
+                        let peek = this.edge_sidebar.mode(this.document.is_some())
+                            == edge_sidebar::Mode::Peek;
                         let diagram = this.diagram_viewer.read(cx).is_open();
-                        let input = !diagram
+                        let input = !peek
+                            && !diagram
                             && this
                                 .pdf
                                 .as_ref()
@@ -1229,11 +1325,14 @@ impl Render for CompanionWindow {
                         let surface =
                             this.surface_open && this.chat_focus.contains_focused(window, cx);
                         match crate::selection_bar::escape_target(
-                            diagram, input, selection, surface,
+                            peek, diagram, input, selection, surface,
                         ) {
                             crate::selection_bar::EscapeTarget::CloseDiagram => this
                                 .diagram_viewer
                                 .update(cx, |viewer, cx| viewer.close(cx)),
+                            crate::selection_bar::EscapeTarget::Peek => {
+                                this.hide_sidebar(window, cx)
+                            }
                             crate::selection_bar::EscapeTarget::Input => {}
                             crate::selection_bar::EscapeTarget::Selection => {
                                 this.dismiss_selection(cx)
@@ -1263,6 +1362,7 @@ impl Render for CompanionWindow {
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .child(self.sidebar_toggle("sidebar-toggle", window, cx))
                     .child(
                         Button::new("open-pdf")
                             .outline()
@@ -1293,80 +1393,12 @@ impl Render for CompanionWindow {
                     ),
             )
             .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable(if self.surface_open {
-                        "reader-panes-chat"
-                    } else {
-                        "reader-panes"
-                    })
-                    .child(
-                        resizable_panel()
-                            .size(px(240.))
-                            .size_range(px(200.)..px(360.))
-                            .flex_none()
-                            .child(self.render_sidebar(window, cx)),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size_range(px(280.)..gpui::Pixels::MAX)
-                            .child(center),
-                    )
-                    .when(self.surface_open, |panes| {
-                        panes.child(
-                            resizable_panel()
-                                .size(window.viewport_size().width * 0.45)
-                                .size_range(
-                                    px(420.)
-                                        ..(window.viewport_size().width - px(360.)).max(px(420.)),
-                                )
-                                .flex_none()
-                                .child(
-                                    div()
-                                        .relative()
-                                        .size_full()
-                                        .track_focus(&self.chat_focus)
-                                        .child(crate::chat_surface::column(
-                                            &self.bridge,
-                                            self.composer.clone(),
-                                            self.model_picker.clone(),
-                                            self.diagram_viewer.clone(),
-                                            &self.chat_scroll,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.bridge.toggle_follow();
-                                                cx.notify();
-                                            }),
-                                            cx.listener(|this, _, _, cx| {
-                                                this.bridge
-                                                    .submit("What did I just read?".into(), None);
-                                                cx.notify();
-                                            }),
-                                            navigate_quote,
-                                            retry,
-                                            cx.listener(|this, _, window, cx| {
-                                                this.toggle_surface(window, cx)
-                                            }),
-                                            cx,
-                                        ))
-                                        .child({
-                                            let orb = self.orb.clone();
-                                            gpui::canvas(
-                                                |_, _, _| (),
-                                                move |bounds, _, _, cx| {
-                                                    orb.update(cx, |orb, cx| {
-                                                        if orb.surface_bounds != bounds {
-                                                            orb.surface_bounds = bounds;
-                                                            cx.notify();
-                                                        }
-                                                    });
-                                                },
-                                            )
-                                            .absolute()
-                                            .inset_0()
-                                        }),
-                                ),
-                        )
-                    }),
-                ),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(panes)
+                    .child(self.render_edge_sidebar(window, cx)),
             )
             .child(self.orb.clone())
             .child(self.diagram_viewer.clone())

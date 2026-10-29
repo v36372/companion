@@ -30,6 +30,9 @@
   safe inline SVG diagrams; closing chat restores the reader's available width
   without changing the vendored PDF API.
 
+- Host edge sidebar peeks over the viewer without changing its layout/scroll;
+  pinning alone docks/resizes it (companion `edge_sidebar.rs`; no viewer changes).
+
 The manifest uses this repository's workspace dependencies and disables
 publishing. Examples are copied unchanged, except `dump_outline` (updated for the
 links API) and `forms_check` (removed with forms). The upstream Cargo.lock and

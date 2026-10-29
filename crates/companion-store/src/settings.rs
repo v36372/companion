@@ -1,4 +1,4 @@
-//! Non-secret model/search preferences. API keys belong exclusively in SecretStore.
+//! Non-secret UI/model/search preferences. API keys belong exclusively in SecretStore.
 use crate::SqliteHub;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,55 @@ pub fn validate_model_id(value: &str) -> anyhow::Result<&str> {
 }
 
 impl SqliteHub {
+    pub fn sidebar_pinned(&self) -> anyhow::Result<bool> {
+        self.write(|db| {
+            let value: Option<String> = db
+                .query_row(
+                    "SELECT value_json FROM settings WHERE key='sidebar_pinned'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(value
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?
+                .unwrap_or(false))
+        })
+    }
+
+    pub fn set_sidebar_pinned(&self, pinned: bool) -> anyhow::Result<()> {
+        self.write(|db| {
+            db.execute("INSERT INTO settings(key,value_json) VALUES('sidebar_pinned',?1) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json", [serde_json::to_string(&pinned)?])?;
+            Ok(())
+        })
+    }
+
+    pub fn sidebar_width(&self) -> anyhow::Result<f32> {
+        self.write(|db| {
+            let value: Option<String> = db
+                .query_row(
+                    "SELECT value_json FROM settings WHERE key='sidebar_width'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let width: f32 = value
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?
+                .unwrap_or(280.);
+            anyhow::ensure!(width.is_finite(), "Invalid sidebar width");
+            Ok(width.clamp(220., 360.))
+        })
+    }
+
+    pub fn set_sidebar_width(&self, width: f32) -> anyhow::Result<()> {
+        anyhow::ensure!(width.is_finite(), "Invalid sidebar width");
+        self.write(|db| {
+            db.execute("INSERT INTO settings(key,value_json) VALUES('sidebar_width',?1) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json", [serde_json::to_string(&width.clamp(220., 360.))?])?;
+            Ok(())
+        })
+    }
+
     pub fn model_id(&self) -> anyhow::Result<String> {
         self.write(|db| {
             let value: Option<String> = db
@@ -139,6 +188,26 @@ impl SqliteHub {
 
 #[cfg(test)]
 mod search_tests {
+    #[test]
+    fn sidebar_preferences_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sidebar.sqlite");
+        let hub = crate::SqliteHub::open(&path).unwrap();
+        assert!(!hub.sidebar_pinned().unwrap());
+        assert_eq!(hub.sidebar_width().unwrap(), 280.);
+        hub.set_sidebar_pinned(true).unwrap();
+        hub.set_sidebar_width(320.).unwrap();
+        drop(hub);
+        let hub = crate::SqliteHub::open(&path).unwrap();
+        assert!(hub.sidebar_pinned().unwrap());
+        assert_eq!(hub.sidebar_width().unwrap(), 320.);
+        hub.set_sidebar_pinned(false).unwrap();
+        hub.set_sidebar_width(999.).unwrap();
+        assert!(!hub.sidebar_pinned().unwrap());
+        assert_eq!(hub.sidebar_width().unwrap(), 360.);
+        assert!(hub.set_sidebar_width(f32::NAN).is_err());
+    }
+
     use crate::SqliteHub;
 
     #[test]

@@ -5,11 +5,10 @@ use gpui_component::{
     list::ListItem,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
-    tooltip::Tooltip,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SidebarTab {
+pub(super) enum SidebarTab {
     Outline,
     Recent,
 }
@@ -49,11 +48,15 @@ impl CompanionWindow {
             .unwrap_or_default();
         // None means automatic until the user actually chooses a tab. In
         // particular an asynchronously loaded outline can become the default.
-        let choice = window.use_keyed_state("sidebar-tab-choice", cx, |_, _| None::<SidebarTab>);
+        // The runtime survives Hidden, so a peek keeps the user's tab choice.
+        let choice = self.sidebar_runtime(window, cx);
         let tab = choice
             .read(cx)
+            .tab
             .unwrap_or_else(|| default_tab(!outline.is_empty()));
         let current = current_section(outline, self.page_0);
+        let tooltip_state = choice.clone();
+        let sidebar_focus = choice.read(cx).focus.clone();
         let spacing = cx.theme().spacing_tokens();
         let typography = cx.theme().typography_tokens();
         let muted = cx.theme().muted_foreground;
@@ -63,13 +66,13 @@ impl CompanionWindow {
         let tabs = TabBar::new("sidebar-tabs")
             .segmented()
             .small()
-            .w_full()
+            .flex_1()
             .selected_index(usize::from(tab == SidebarTab::Recent))
             .child(Tab::new().label("Outline"))
             .child(Tab::new().label("Recent"))
             .on_click(move |index, _, cx| {
                 choice.update(cx, |choice, cx| {
-                    *choice = Some(if *index == 0 {
+                    choice.tab = Some(if *index == 0 {
                         SidebarTab::Outline
                     } else {
                         SidebarTab::Recent
@@ -130,6 +133,7 @@ impl CompanionWindow {
                     .flex_col()
                     .gap(spacing.xxs)
                     .children(outline.iter().cloned().enumerate().map(|(index, item)| {
+                        let tooltip_state = tooltip_state.clone();
                         let available = item.page.is_some();
                         let tooltip = if available {
                             item.title.clone()
@@ -156,7 +160,12 @@ impl CompanionWindow {
                                     })
                                     .when(!available, |row| row.opacity(0.45))
                                     .tooltip(move |window, cx| {
-                                        Tooltip::new(tooltip.clone()).build(window, cx)
+                                        super::edge_sidebar::sidebar_tooltip(
+                                            tooltip.clone(),
+                                            &tooltip_state,
+                                            window,
+                                            cx,
+                                        )
                                     })
                                     .child(div().w_full().min_w_0().truncate().child(item.title))
                                     .when_some(item.page, |row, page_0| {
@@ -178,6 +187,7 @@ impl CompanionWindow {
                 .flex_col()
                 .gap(spacing.xxs)
                 .children(self.recent.iter().cloned().map(|document| {
+                    let tooltip_state = tooltip_state.clone();
                     let is_open = self
                         .document
                         .as_ref()
@@ -203,7 +213,14 @@ impl CompanionWindow {
                         .cursor_pointer()
                         .hover(move |style| style.bg(hovered))
                         .active(move |style| style.bg(pressed))
-                        .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
+                        .tooltip(move |window, cx| {
+                            super::edge_sidebar::sidebar_tooltip(
+                                title.clone(),
+                                &tooltip_state,
+                                window,
+                                cx,
+                            )
+                        })
                         .child(
                             div()
                                 .w_full()
@@ -225,6 +242,7 @@ impl CompanionWindow {
                                 ),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
+                            this.hide_sidebar(window, cx);
                             this.open_document(document.clone(), window, cx)
                         }))
                 }))
@@ -233,6 +251,8 @@ impl CompanionWindow {
 
         div()
             .id("sidebar")
+            .track_focus(&sidebar_focus)
+            .key_context("EdgeSidebar")
             .flex()
             .flex_col()
             .w_full()
@@ -243,7 +263,16 @@ impl CompanionWindow {
             .text_color(cx.theme().sidebar_foreground)
             .border_r_1()
             .border_color(cx.theme().border)
-            .child(div().p(spacing.sm).flex_shrink_0().child(tabs))
+            .child(
+                div()
+                    .p(spacing.sm)
+                    .flex()
+                    .items_center()
+                    .gap(spacing.xs)
+                    .flex_shrink_0()
+                    .child(tabs)
+                    .child(self.sidebar_toggle("sidebar-pin", window, cx)),
+            )
             .child(
                 div()
                     .id("sidebar-content")

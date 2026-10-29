@@ -2,6 +2,7 @@ use gpui::{Bounds, Pixels, Point, point, px};
 
 #[derive(Debug, PartialEq)]
 pub enum EscapeTarget {
+    Peek,
     CloseDiagram,
     Input,
     Selection,
@@ -9,8 +10,16 @@ pub enum EscapeTarget {
     Abort,
 }
 
-pub fn escape_target(diagram: bool, input: bool, selection: bool, surface: bool) -> EscapeTarget {
-    if diagram {
+pub fn escape_target(
+    peek: bool,
+    diagram: bool,
+    input: bool,
+    selection: bool,
+    surface: bool,
+) -> EscapeTarget {
+    if peek {
+        EscapeTarget::Peek
+    } else if diagram {
         EscapeTarget::CloseDiagram
     } else if input {
         EscapeTarget::Input
@@ -57,23 +66,27 @@ mod tests {
 
     #[test]
     fn escape_order() {
-        assert_eq!(
-            escape_target(true, true, true, true),
-            EscapeTarget::CloseDiagram
-        );
-        assert_eq!(escape_target(false, true, true, true), EscapeTarget::Input);
-        assert_eq!(
-            escape_target(false, false, true, true),
-            EscapeTarget::Selection
-        );
-        assert_eq!(
-            escape_target(false, false, false, true),
-            EscapeTarget::CloseSurface
-        );
-        assert_eq!(
-            escape_target(false, false, false, false),
-            EscapeTarget::Abort
-        );
+        for bits in 0..32 {
+            let [peek, diagram, input, selection, surface] =
+                std::array::from_fn(|i| bits & (1 << i) != 0);
+            let expected = if peek {
+                EscapeTarget::Peek
+            } else if diagram {
+                EscapeTarget::CloseDiagram
+            } else if input {
+                EscapeTarget::Input
+            } else if selection {
+                EscapeTarget::Selection
+            } else if surface {
+                EscapeTarget::CloseSurface
+            } else {
+                EscapeTarget::Abort
+            };
+            assert_eq!(
+                escape_target(peek, diagram, input, selection, surface),
+                expected
+            );
+        }
     }
 
     #[test]
