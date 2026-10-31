@@ -109,7 +109,7 @@ pub fn run(path: Option<PathBuf>) {
             // Retain the completion receiver independently of the native window:
             // window-close may destroy its entity before on_app_quit runs.
             let companion = companion.expect("create Learning Companion view");
-            let agent_shutdown = companion.read(cx).agent_shutdown();
+            let agent_shutdown = companion.read(cx).agent_shutdown(cx);
             cx.on_app_quit(move |cx| {
                 let _ = window.update(cx, |_, window, cx| {
                     companion.update(cx, |view, cx| view.close_pdf(window, cx));

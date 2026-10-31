@@ -12,6 +12,7 @@ use std::{
 use crate::{
     agent_bridge::{Attachment, Bridge},
     ask_bar::{AskBar, AskEvent},
+    chat_surface::{ChatSurface, Event as ChatEvent},
 };
 use companion_pdf::{
     CompanionPdf,
@@ -58,15 +59,11 @@ pub struct CompanionWindow {
     error: Option<String>,
     selection: Option<(LiveSelection, String)>,
     selection_bar_open: bool,
-    bridge: Bridge,
-    composer: Entity<AskBar>,
+    chat: Entity<ChatSurface>,
     password_bar: Entity<AskBar>,
-    model_picker: Entity<crate::model_picker::ModelPicker>,
     password_open: bool,
     password_focus_pending: bool,
-    chat_scroll: gpui::ScrollHandle,
     surface_open: bool,
-    unread: bool,
     chat_focus: FocusHandle,
     orb: Entity<crate::orb::Orb>,
     diagram_viewer: Entity<crate::diagram::DiagramViewer>,
@@ -140,8 +137,6 @@ impl CompanionWindow {
                 Some(format!("Cannot open catalog: {error:#}")),
             ),
         };
-        let model_picker = cx.new(|cx| crate::model_picker::ModelPicker::new(catalog.clone(), cx));
-        let composer = cx.new(AskBar::new);
         let orb = cx.new(crate::orb::Orb::new);
         cx.subscribe_in(
             &orb,
@@ -152,20 +147,16 @@ impl CompanionWindow {
         )
         .detach();
         let diagram_viewer = cx.new(|_| crate::diagram::DiagramViewer::default());
-        cx.subscribe(&composer, |this, _, event: &AskEvent, cx| {
-            match event {
-                AskEvent::Submit(text) => {
-                    if this.bridge.submit(text.clone(), None) {
-                        this.composer.update(cx, |bar, cx| {
-                            bar.text.clear();
-                            cx.notify();
-                        });
-                    }
-                }
-                AskEvent::Abort => this.bridge.abort(),
-            }
-            cx.notify();
-        })
+        let chat = cx.new(|cx| ChatSurface::new(catalog.clone(), diagram_viewer.clone(), cx));
+        cx.subscribe_in(
+            &chat,
+            window,
+            |this, _, event: &ChatEvent, window, cx| match event {
+                ChatEvent::ReaderChanged => cx.notify(),
+                ChatEvent::Navigate(page) => this.goto_explicit(*page, cx),
+                ChatEvent::Close => this.toggle_surface(window, cx),
+            },
+        )
         .detach();
         let password_bar = cx.new(|cx| {
             let mut bar = AskBar::new(cx);
@@ -186,41 +177,9 @@ impl CompanionWindow {
             cx.notify();
         })
         .detach();
-        #[cfg(feature = "agent")]
-        let bridge = if let Some(hub) = catalog.clone() {
-            let (bridge, events) = Bridge::start(hub);
-            cx.spawn(async move |this, cx| {
-                while let Ok(event) = events.recv().await {
-                    if this
-                        .update(cx, |this, cx| {
-                            let was_running = this.bridge.running;
-                            this.bridge.event(event);
-                            this.unread = crate::orb::unread_after(
-                                this.unread,
-                                was_running,
-                                this.bridge.running,
-                                this.surface_open,
-                            );
-                            crate::chat::follow_tail(&this.chat_scroll);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .detach();
-            bridge
-        } else {
-            Bridge::off()
-        };
-        #[cfg(not(feature = "agent"))]
-        let bridge = Bridge::off();
         let mut view = Self {
             pdf: None,
             edge_sidebar: edge_sidebar::EdgeSidebar::load(catalog.as_deref()),
-            model_picker,
             focus,
             window_title: String::new(),
             dialog_open: false,
@@ -234,14 +193,11 @@ impl CompanionWindow {
             error,
             selection: None,
             selection_bar_open: false,
-            bridge,
-            composer,
+            chat,
             password_bar,
             password_open: false,
             password_focus_pending: false,
-            chat_scroll: gpui::ScrollHandle::new(),
             surface_open: false,
-            unread: false,
             chat_focus: cx.focus_handle(),
             orb,
             diagram_viewer,
@@ -279,24 +235,28 @@ impl CompanionWindow {
 
     fn toggle_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.surface_open = !self.surface_open;
-        self.unread = false;
-        if self.surface_open {
-            self.composer.update(cx, |bar, cx| bar.focus(window, cx));
-        } else {
+        self.chat.update(cx, |chat, cx| {
+            chat.set_open(self.surface_open, cx);
+            if self.surface_open {
+                chat.focus(window, cx);
+            }
+        });
+        if !self.surface_open {
             self.focus.focus(window, cx);
         }
         cx.notify();
     }
 
-    pub fn agent_shutdown(&self) -> Option<async_channel::Receiver<()>> {
-        self.bridge.shutdown()
+    pub fn agent_shutdown(&self, cx: &gpui::App) -> Option<async_channel::Receiver<()>> {
+        self.chat.read(cx).shutdown()
     }
 
     /// Flush pending navigation before quitting; background timers may
     /// not run once the application event loop has stopped.
     pub fn close_pdf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.import.invalidate();
-        self.bridge.close();
+        self.chat
+            .update(cx, |chat, cx| chat.update_bridge(Bridge::close, cx));
         if let Some(catalog) = &self.catalog {
             for (document_id, (progress, generation)) in &self.navigation {
                 if generation.load(Ordering::SeqCst) == 0 {
@@ -329,9 +289,16 @@ impl CompanionWindow {
                         .is_some_and(|doc| doc.id == document_id)
                     {
                         self.goto_explicit(page_0, cx);
-                        self.bridge
-                            .notices
-                            .push(format!("went to p. {}", page_0_to_1(page_0)));
+                        self.chat.update(cx, |chat, cx| {
+                            chat.update_bridge(
+                                |bridge| {
+                                    bridge
+                                        .notices
+                                        .push(format!("went to p. {}", page_0_to_1(page_0)))
+                                },
+                                cx,
+                            );
+                        });
                     }
                 }
                 companion_env::PdfCommand::Highlight { document_id, .. } => {
@@ -341,7 +308,12 @@ impl CompanionWindow {
                         .is_some_and(|doc| doc.id == document_id)
                     {
                         self.restore_highlights(cx);
-                        self.bridge.notices.push("highlighted a passage".into());
+                        self.chat.update(cx, |chat, cx| {
+                            chat.update_bridge(
+                                |bridge| bridge.notices.push("highlighted a passage".into()),
+                                cx,
+                            );
+                        });
                         cx.notify();
                     }
                 }
@@ -483,7 +455,8 @@ impl CompanionWindow {
         }
         // Invalidate chat immediately; the bridge waits for old submit + abort
         // before publishing any replacement SetDocument/OpenDocument.
-        self.bridge.begin_switch();
+        self.chat
+            .update(cx, |chat, cx| chat.update_bridge(Bridge::begin_switch, cx));
         // Only release the old viewer once the new managed document is available.
         self.release_pdf(window, cx);
         let pdf = CompanionPdf::open(display_path, cx);
@@ -733,12 +706,15 @@ impl CompanionWindow {
                             snapshot.record_scroll_navigation(page, fraction);
                         }
                         if let (Some(fs), Some(doc)) = (&this.doc_env, &this.document) {
-                            this.bridge.switch_document(Attachment {
+                            let attachment = Attachment {
                                 fs: fs.clone(),
                                 pdf_tx: this.pdf_commands.0.clone(),
                                 document_id: doc.id.clone(),
                                 title: doc.title.clone(),
                                 page_count: doc.page_count.unwrap_or(0),
+                            };
+                            this.chat.update(cx, |chat, cx| {
+                                chat.update_bridge(|bridge| bridge.switch_document(attachment), cx);
                             });
                         }
                         this.refresh_recent();
@@ -922,16 +898,19 @@ impl CompanionWindow {
 
     fn ask_selection(&mut self, cx: &mut Context<Self>) {
         if let Some((selection, _)) = &self.selection {
-            if !self.bridge.submit("Explain this passage.".into(), Some(serde_json::json!({
-                "page": selection.page, "quote": selection.quote, "occurrence": selection.occurrence
-            }))) {
+            let accepted = self.chat.update(cx, |chat, cx| {
+                chat.update_bridge(|bridge| bridge.submit("Explain this passage.".into(), Some(serde_json::json!({
+                    "page": selection.page, "quote": selection.quote, "occurrence": selection.occurrence
+                }))), cx)
+            });
+            if !accepted {
                 // The bridge supplies the visible rejection reason; retain selection.
                 cx.notify();
                 return;
             }
             self.selection_bar_open = false;
             self.surface_open = true;
-            self.unread = false;
+            self.chat.update(cx, |chat, cx| chat.set_open(true, cx));
             cx.notify();
         }
     }
@@ -1032,13 +1011,11 @@ impl Render for CompanionWindow {
             self.password_bar
                 .update(cx, |bar, cx| bar.focus(window, cx));
         }
-        let disabled_reason = self
-            .bridge
-            .unavailable_reason()
-            .map(|_| crate::chat::status_label(&self.bridge).to_owned());
-        let status = crate::orb::agent_status(&self.bridge, self.surface_open, self.unread);
+        let state = self.chat.read(cx).reader_state.clone();
+        let disabled_reason = state.disabled_reason;
+        let status = state.status;
         self.orb.update(cx, |orb, cx| {
-            let label = crate::orb::tooltip_label(&self.bridge, status).to_owned();
+            let label = state.label.to_owned();
             if orb.status != status || orb.label != label || orb.surface_open != self.surface_open {
                 orb.status = status;
                 orb.label = label;
@@ -1050,29 +1027,6 @@ impl Render for CompanionWindow {
             }
         });
         let can_chat = disabled_reason.is_none();
-        self.composer.update(cx, |bar, cx| {
-            if bar.disabled_reason != disabled_reason {
-                bar.disabled_reason = disabled_reason.clone();
-                cx.notify();
-            }
-        });
-        self.model_picker.update(cx, |picker, cx| {
-            if picker.disabled_reason != disabled_reason {
-                picker.disabled_reason = disabled_reason.clone();
-                cx.notify();
-            }
-        });
-        let weak = cx.weak_entity();
-        let navigate_quote = move |page_0, _: &mut Window, cx: &mut gpui::App| {
-            let _ = weak.update(cx, |this, cx| this.goto_explicit(page_0, cx));
-        };
-        let retry_weak = cx.weak_entity();
-        let retry = move |_: &mut Window, cx: &mut gpui::App| {
-            let _ = retry_weak.update(cx, |this, cx| {
-                this.bridge.retry_parked();
-                cx.notify();
-            });
-        };
         if let Some(pdf) = &self.pdf {
             let theme = cx.theme();
             pdf.set_style(
@@ -1105,12 +1059,10 @@ impl Render for CompanionWindow {
             .overflow_hidden();
         let center = match &self.pdf {
             Some(pdf) => center.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(pdf.view()),
+                div().flex_1().min_w_0().min_h_0().overflow_hidden().child(
+                    pdf.view()
+                        .cached(gpui::StyleRefinement::default().size_full()),
+                ),
             ),
             None => center
                 .flex()
@@ -1283,27 +1235,11 @@ impl Render for CompanionWindow {
                                 .relative()
                                 .size_full()
                                 .track_focus(&self.chat_focus)
-                                .child(crate::chat_surface::column(
-                                    &self.bridge,
-                                    self.composer.clone(),
-                                    self.model_picker.clone(),
-                                    self.diagram_viewer.clone(),
-                                    &self.chat_scroll,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.bridge.toggle_follow();
-                                        cx.notify();
-                                    }),
-                                    cx.listener(|this, _, _, cx| {
-                                        this.bridge.submit("What did I just read?".into(), None);
-                                        cx.notify();
-                                    }),
-                                    navigate_quote,
-                                    retry,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.toggle_surface(window, cx)
-                                    }),
-                                    cx,
-                                ))
+                                .child(
+                                    self.chat
+                                        .clone()
+                                        .cached(gpui::StyleRefinement::default().size_full()),
+                                )
                                 .child({
                                     let orb = self.orb.clone();
                                     gpui::canvas(
@@ -1387,7 +1323,9 @@ impl Render for CompanionWindow {
                             crate::selection_bar::EscapeTarget::Selection => {
                                 this.dismiss_selection(cx)
                             }
-                            crate::selection_bar::EscapeTarget::Abort => this.bridge.abort(),
+                            crate::selection_bar::EscapeTarget::Abort => this
+                                .chat
+                                .update(cx, |chat, cx| chat.update_bridge(Bridge::abort, cx)),
                             crate::selection_bar::EscapeTarget::CloseSurface => {
                                 this.toggle_surface(window, cx)
                             }

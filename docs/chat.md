@@ -41,8 +41,14 @@ a prompt-injection sandbox.
 
 The guest awaits `viewState()` and subscribes before submit. Structural commits
 carry transcript snapshots; on-stream carries replaceable pi.live snapshots.
-The UI awaits an async event channel (no token polling timer), so a local user
-commit wakes GPUI immediately instead of waiting for the PDF-command drain.
+The chat entity awaits an async event channel (no token polling timer), so a
+local user commit wakes it immediately instead of waiting for the PDF-command
+drain. Streaming events update the bridge immediately, but visible chat redraws
+are coalesced behind one 33 ms timer. Input, completion and errors bypass that
+timer; hiding chat cancels it without dropping events. The reader window is
+notified only when its agent status or control availability changes. Both the
+PDF and chat have separately cached GPUI subtrees; theme and size changes still
+invalidate the relevant content.
 `session_failed`, `task_parked`, `task_faulted`, other reports, and short spatial
 tool traces are shown in the pane. Parked tasks have a conversation-scoped Retry
 action. See [reader UX](reader-ux.md) for crash-resume, outline, Find and passwords.
@@ -75,6 +81,12 @@ an explicit memory SecretStore. It covers streamed snapshots → committed reply
 a queued follow-up, Esc mid-body (including abort-export completion), and
 opening another document while streaming. Default tests also cover missing-key
 submission refusal, stale events and UUIDv7/selection metadata.
+
+The GPUI scheduling and cached-sibling regression checks need no desktop or keys:
+
+```sh
+cargo test -p companion chat_surface::tests --locked -- --nocapture
+```
 
 ## Local headless smoke (no API keys)
 
